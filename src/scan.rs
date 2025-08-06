@@ -1,11 +1,16 @@
 use gix::{
-    ObjectId, ThreadSafeRepository, revision::walk::Sorting,
+    ObjectId, ThreadSafeRepository, diff::tree_with_rewrites::Change, revision::walk::Sorting,
     traverse::commit::simple::CommitTimeOrder,
 };
+use num_format::{Locale, ToFormattedString};
 use rayon::prelude::*;
-use std::path::PathBuf;
+use std::{cell::OnceCell, path::PathBuf};
 
 use anyhow::Result;
+
+thread_local! {
+    static REPO_CACHE: OnceCell<gix::Repository> = const { OnceCell::new() };
+}
 
 pub fn scan(path: &PathBuf) -> Result<()> {
     let thread_safe_repo = ThreadSafeRepository::open(path)?;
@@ -22,26 +27,40 @@ pub fn scan(path: &PathBuf) -> Result<()> {
         .chain(std::iter::once(head_commit.id().detach()))
         .collect();
 
-    let res: Vec<_> = items
+    println!(
+        "Got {} commits",
+        items.len().to_formatted_string(&Locale::en)
+    );
+
+    let res: usize = items
         .par_iter()
         .enumerate()
-        .map(|(index, commit_id)| -> Result<(usize, &ObjectId)> {
-            let repo = thread_safe_repo.to_thread_local();
+        .map(|(_index, commit_id)| {
+            // Create a thread-local object cache to minimize the amount of fs calls we do.
+            let count: Result<usize> = REPO_CACHE.with(|cache| {
+                let repo = cache.get_or_init(|| thread_safe_repo.to_thread_local());
 
-            let commit = repo.find_commit(*commit_id)?;
-            let parent = commit
-                .ancestors()
-                .all()?
-                .next()
-                .transpose()?
-                .map(|x| x.id());
+                let commit = repo.find_commit(*commit_id)?;
+                let parent_tree = commit
+                    .parent_ids()
+                    .next()
+                    .and_then(|x| x.object().ok())
+                    .and_then(|x| x.peel_to_commit().ok())
+                    .and_then(|x| x.tree().ok());
 
-            println!("Commit: {}, parent: {:?}", commit.id(), parent);
+                let result = repo.diff_tree_to_tree(
+                    parent_tree.as_ref(),
+                    commit.tree().ok().as_ref(),
+                    None,
+                )?;
 
-            Ok((index, commit_id))
+                Ok(result.len())
+            });
+
+            count.unwrap()
         })
-        .collect();
-    println!("Last commit time: {}", head_commit.id());
+        .sum();
+    println!("Total changes: {}", res.to_formatted_string(&Locale::en));
 
     Ok(())
 }

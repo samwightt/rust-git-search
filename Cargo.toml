@@ -8,4 +8,5 @@ anyhow = "1.0.98"
 clap = { version = "4.5.42", features = ["derive"] }
 gix = "0.73.0"
 itertools = "0.14.0"
+num-format = "0.4.4"
 rayon = "1.10.0"
