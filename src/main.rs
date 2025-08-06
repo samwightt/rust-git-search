@@ -2,6 +2,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::env;
 
+mod scan;
+
 #[derive(Parser)]
 #[command(name = "git-history")]
 #[command(about = "A tool for analyzing git history")]
@@ -25,6 +27,7 @@ fn main() -> Result<()> {
             let resolved_path = target_path.canonicalize()?;
 
             println!("Scanning directory: {}", resolved_path.display());
+            scan::scan(&resolved_path)?;
         }
     }
 
