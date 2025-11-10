@@ -1,7 +1,7 @@
 mod common;
 
 use assert_cmd::Command;
-use common::{create_and_commit_file, delete_and_commit_file, setup_test_repo};
+use common::{create_and_commit_file, create_and_commit_files, delete_and_commit_file, setup_test_repo};
 use std::fs;
 
 #[test]
@@ -92,4 +92,111 @@ fn test_timeline_deletion_delta() {
     // Second commit: count should be 0 (deleted 5 occurrences, so 5 - 5 = 0)
     assert_eq!(json2["count"].as_i64().unwrap(), 0);
     assert!(json2["message"].as_str().unwrap().contains("Delete file1"));
+}
+
+#[test]
+fn test_timeline_modification_delta() {
+    let (_temp_dir, repo_path) = setup_test_repo();
+
+    // First commit: add a file with 2 occurrences of "bar"
+    create_and_commit_file(
+        &repo_path,
+        "file1.txt",
+        "bar bar",
+        "Add file1 with 2 bars",
+    );
+
+    // Second commit: modify the file to have 5 occurrences
+    create_and_commit_file(
+        &repo_path,
+        "file1.txt",
+        "bar bar bar bar bar",
+        "Update file1 to 5 bars",
+    );
+
+    let output_file = repo_path.join("timeline.jsonl");
+
+    let mut cmd = Command::cargo_bin("git-history").unwrap();
+    cmd.arg("timeline")
+        .arg(repo_path.to_str().unwrap())
+        .arg("bar")
+        .arg("--output")
+        .arg(output_file.to_str().unwrap());
+
+    cmd.assert().success();
+
+    // Read the output file
+    let content = fs::read_to_string(&output_file).expect("Failed to read output file");
+    let lines: Vec<&str> = content.lines().collect();
+
+    assert_eq!(lines.len(), 2, "Should have 2 commits in timeline");
+
+    // Parse the JSON lines
+    let json1: serde_json::Value = serde_json::from_str(lines[0]).expect("Failed to parse JSON line 1");
+    let json2: serde_json::Value = serde_json::from_str(lines[1]).expect("Failed to parse JSON line 2");
+
+    // First commit: count should be 2 (added 2 occurrences)
+    assert_eq!(json1["count"].as_i64().unwrap(), 2);
+    assert!(json1["message"].as_str().unwrap().contains("Add file1 with 2 bars"));
+
+    // Second commit: count should be 5 (was 2, added 3 more, so 2 + 3 = 5)
+    assert_eq!(json2["count"].as_i64().unwrap(), 5);
+    assert!(json2["message"].as_str().unwrap().contains("Update file1 to 5 bars"));
+}
+
+#[test]
+fn test_timeline_multiple_changes_in_one_commit() {
+    let (_temp_dir, repo_path) = setup_test_repo();
+
+    // First commit: add file1 with 3 occurrences and file2 with 2 occurrences
+    create_and_commit_files(
+        &repo_path,
+        &[
+            ("file1.txt", "baz baz baz"),
+            ("file2.txt", "baz baz"),
+        ],
+        "Add file1 and file2",
+    );
+
+    // Second commit: modify both files
+    // file1: 3 -> 1 (delta: -2)
+    // file2: 2 -> 4 (delta: +2)
+    // Total delta: 0, so count should remain 5
+    create_and_commit_files(
+        &repo_path,
+        &[
+            ("file1.txt", "baz"),
+            ("file2.txt", "baz baz baz baz"),
+        ],
+        "Update both files",
+    );
+
+    let output_file = repo_path.join("timeline.jsonl");
+
+    let mut cmd = Command::cargo_bin("git-history").unwrap();
+    cmd.arg("timeline")
+        .arg(repo_path.to_str().unwrap())
+        .arg("baz")
+        .arg("--output")
+        .arg(output_file.to_str().unwrap());
+
+    cmd.assert().success();
+
+    // Read the output file
+    let content = fs::read_to_string(&output_file).expect("Failed to read output file");
+    let lines: Vec<&str> = content.lines().collect();
+
+    assert_eq!(lines.len(), 2, "Should have 2 commits in timeline");
+
+    // Parse the JSON lines
+    let json1: serde_json::Value = serde_json::from_str(lines[0]).expect("Failed to parse JSON line 1");
+    let json2: serde_json::Value = serde_json::from_str(lines[1]).expect("Failed to parse JSON line 2");
+
+    // First commit: count should be 5 (3 + 2)
+    assert_eq!(json1["count"].as_i64().unwrap(), 5);
+    assert!(json1["message"].as_str().unwrap().contains("Add file1 and file2"));
+
+    // Second commit: count should still be 5 (5 + (-2) + 2 = 5)
+    assert_eq!(json2["count"].as_i64().unwrap(), 5);
+    assert!(json2["message"].as_str().unwrap().contains("Update both files"));
 }

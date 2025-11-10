@@ -120,3 +120,34 @@ pub fn delete_and_commit_file(repo_path: &PathBuf, filename: &str, commit_msg: &
     // Sleep to ensure distinct commit timestamps
     thread::sleep(Duration::from_millis(1100));
 }
+
+/// Helper to create/modify multiple files and commit them together
+pub fn create_and_commit_files(repo_path: &PathBuf, files: &[(&str, &str)], commit_msg: &str) {
+    for (filename, content) in files {
+        let file_path = repo_path.join(filename);
+        fs::write(&file_path, content).expect("Failed to write file");
+
+        let output = std::process::Command::new("git")
+            .args(["add", filename])
+            .current_dir(repo_path)
+            .output()
+            .expect("Failed to git add");
+
+        if !output.status.success() {
+            panic!("git add failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+    }
+
+    let output = std::process::Command::new("git")
+        .args(["commit", "-m", commit_msg])
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to git commit");
+
+    if !output.status.success() {
+        panic!("git commit failed: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    // Sleep to ensure distinct commit timestamps
+    thread::sleep(Duration::from_millis(1100));
+}
