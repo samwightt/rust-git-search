@@ -12,8 +12,9 @@ pub fn timeline(path: &PathBuf, search_string: &str, output: &str) -> Result<()>
     let repo = thread_safe_repo.to_thread_local();
 
     let head_commit = repo.head()?.peel_to_commit_in_place()?;
-    // Collect ancestors (they come in reverse chronological order by default)
-    let mut commits_raw: Vec<_> = head_commit
+
+    // Collect all commits (ancestors + HEAD)
+    let mut commits_with_dupes: Vec<_> = head_commit
         .ancestors()
         .first_parent_only()
         .all()?
@@ -21,24 +22,24 @@ pub fn timeline(path: &PathBuf, search_string: &str, output: &str) -> Result<()>
         .map(|x| x.id().detach())
         .collect();
 
-    // Reverse to get chronological order (oldest first)
-    commits_raw.reverse();
+    commits_with_dupes.push(head_commit.id().detach());
 
-    // Add HEAD commit at the end
-    commits_raw.push(head_commit.id().detach());
-
-    // Remove duplicates while preserving order (working around gix issue)
+    // Remove duplicates (gix sometimes returns HEAD in ancestors)
     let mut seen = HashSet::new();
-    let commits: Vec<_> = commits_raw
+    let commits: Vec<_> = commits_with_dupes
         .into_iter()
         .filter(|id| seen.insert(*id))
         .collect();
 
     // Process commits in parallel to calculate deltas
-    let commit_deltas: Vec<CommitData> = commits
+    // Order doesn't matter here - we'll sort by timestamp after
+    let mut commit_deltas: Vec<CommitData> = commits
         .par_iter()
         .map(|commit_id| calculate_commit_delta(&thread_safe_repo, commit_id, search_string))
         .collect();
+
+    // Sort by timestamp (oldest first) AFTER parallel processing
+    commit_deltas.sort_by_key(|data| data.timestamp);
 
     // Accumulate running totals sequentially
     let mut running_total: i64 = 0;
@@ -73,6 +74,7 @@ struct TimelineEntry {
 }
 
 struct CommitData {
+    timestamp: i64,  // Unix timestamp for sorting
     date: String,
     commit_id: String,
     message: String,
@@ -110,10 +112,9 @@ fn calculate_commit_delta(
             .expect("Expected git commit to exist");
 
         // Extract metadata
-        let date = commit.time()
-            .expect("Expected commit to have time")
-            .format(gix::date::time::format::ISO8601_STRICT)
-            .to_string();
+        let time = commit.time().expect("Expected commit to have time");
+        let timestamp = time.seconds;
+        let date = time.format(gix::date::time::format::ISO8601_STRICT).to_string();
         let message = commit.message()
             .expect("Expected commit to have message")
             .summary()
@@ -148,6 +149,7 @@ fn calculate_commit_delta(
             .sum();
 
         CommitData {
+            timestamp,
             date,
             commit_id: commit_id.to_string(),
             message,
