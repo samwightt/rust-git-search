@@ -31,11 +31,18 @@ pub fn timeline(path: &PathBuf, search_string: &str, output: &str) -> Result<()>
         .filter(|id| seen.insert(*id))
         .collect();
 
-    // Process commits in parallel to calculate deltas
+    // Process commits in parallel: calculate deltas, then extract metadata
     // Order doesn't matter here - we'll sort by timestamp after
     let mut commit_deltas: Vec<CommitData> = commits
         .par_iter()
-        .map(|commit_id| calculate_commit_delta(&thread_safe_repo, commit_id, search_string))
+        .map(|commit_id| {
+            let delta = calculate_commit_delta(&thread_safe_repo, commit_id, search_string);
+            DeltaResult {
+                commit_id: *commit_id,
+                delta,
+            }
+        })
+        .map(|result| extract_commit_metadata(&thread_safe_repo, result))
         .collect();
 
     // Sort by timestamp (oldest first) AFTER parallel processing
@@ -85,6 +92,11 @@ struct CommitData {
     delta: i64,
 }
 
+struct DeltaResult {
+    commit_id: ObjectId,
+    delta: i64,
+}
+
 struct CommitChange {
     change: Change,
 }
@@ -107,24 +119,11 @@ fn calculate_commit_delta(
     thread_safe_repo: &ThreadSafeRepository,
     commit_id: &ObjectId,
     search_string: &str,
-) -> CommitData {
+) -> i64 {
     with_repo_cache(thread_safe_repo, |repo| {
         let commit = repo
             .find_commit(*commit_id)
             .expect("Expected git commit to exist");
-
-        // Extract metadata
-        let time = commit.time().expect("Expected commit to have time");
-        let timestamp = time.seconds;
-        let date = time.format(gix::date::time::format::ISO8601_STRICT).to_string();
-        let message = commit.message()
-            .expect("Expected commit to have message")
-            .summary()
-            .to_string();
-        let author = commit.author()
-            .expect("Expected commit to have author");
-        let author_name = author.name.to_string();
-        let author_email = author.email.to_string();
 
         // Get parent tree
         let parent_tree = commit
@@ -142,22 +141,45 @@ fn calculate_commit_delta(
             .map(|change| CommitChange { change })
             .collect();
 
-        let delta: i64 = changes
+        changes
             .iter()
             .filter(|change| {
                 change.change.entry_mode().is_blob() && !change.change.entry_mode().is_executable()
             })
             .filter_map(|change| calculate_change_delta(repo, change, search_string))
-            .sum();
+            .sum()
+    })
+}
+
+fn extract_commit_metadata(
+    thread_safe_repo: &ThreadSafeRepository,
+    result: DeltaResult,
+) -> CommitData {
+    with_repo_cache(thread_safe_repo, |repo| {
+        let commit = repo
+            .find_commit(result.commit_id)
+            .expect("Expected git commit to exist");
+
+        let time = commit.time().expect("Expected commit to have time");
+        let timestamp = time.seconds;
+        let date = time.format(gix::date::time::format::ISO8601_STRICT).to_string();
+        let message = commit.message()
+            .expect("Expected commit to have message")
+            .summary()
+            .to_string();
+        let author = commit.author()
+            .expect("Expected commit to have author");
+        let author_name = author.name.to_string();
+        let author_email = author.email.to_string();
 
         CommitData {
             timestamp,
             date,
-            commit_id: commit_id.to_string(),
+            commit_id: result.commit_id.to_string(),
             message,
             author_name,
             author_email,
-            delta,
+            delta: result.delta,
         }
     })
 }
