@@ -5,6 +5,9 @@ use std::env;
 mod scan;
 mod timeline;
 
+#[cfg(test)]
+mod test_helpers;
+
 #[derive(Parser)]
 #[command(name = "git-history")]
 #[command(about = "A tool for analyzing git history")]
