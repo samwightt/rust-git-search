@@ -35,18 +35,14 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Scan { directory, search_string } => {
-            let current_dir = env::current_dir()?;
-            let target_path = current_dir.join(&directory);
-            let resolved_path = target_path.canonicalize()?;
+            let resolved_path = env::current_dir()?.join(&directory).canonicalize()?;
 
             println!("Scanning directory: {}", resolved_path.display());
             println!("Searching for: '{}'", search_string);
             scan::scan(&resolved_path, &search_string)?;
         }
         Commands::Timeline { directory, search_string, output } => {
-            let current_dir = env::current_dir()?;
-            let target_path = current_dir.join(&directory);
-            let resolved_path = target_path.canonicalize()?;
+            let resolved_path = env::current_dir()?.join(&directory).canonicalize()?;
 
             timeline::timeline(&resolved_path, &search_string, &output)?;
         }

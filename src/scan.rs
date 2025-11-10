@@ -4,11 +4,11 @@ use gix::{
 };
 use num_format::{Locale, ToFormattedString};
 use rayon::prelude::*;
-use std::{cell::OnceCell, path::PathBuf};
+use std::{cell::OnceCell, path::Path};
 
 use anyhow::Result;
 
-pub fn scan(path: &PathBuf, search_string: &str) -> Result<()> {
+pub fn scan(path: &Path, search_string: &str) -> Result<()> {
     let thread_safe_repo = ThreadSafeRepository::open(path)?;
     let repo = thread_safe_repo.to_thread_local();
 

@@ -3,11 +3,11 @@ use gix::{
 };
 use rayon::prelude::*;
 use serde::Serialize;
-use std::{cell::OnceCell, fs::File, io::Write, path::PathBuf};
+use std::{cell::OnceCell, fs::File, io::Write, path::Path};
 
 use anyhow::Result;
 
-pub fn timeline(path: &PathBuf, search_string: &str, output: &str) -> Result<()> {
+pub fn timeline(path: &Path, search_string: &str, output: &str) -> Result<()> {
     let thread_safe_repo = ThreadSafeRepository::open(path)?;
     let repo = thread_safe_repo.to_thread_local();
 
@@ -121,18 +121,14 @@ fn calculate_commit_delta(
             .and_then(|x| x.tree().ok());
 
         // Calculate delta from changes
-        let changes: Vec<Change> = repo
+        repo
             .diff_tree_to_tree(parent_tree.as_ref(), commit.tree().ok().as_ref(), None)
             .unwrap()
             .into_iter()
-            .collect();
-
-        changes
-            .iter()
             .filter(|change| {
                 change.entry_mode().is_blob() && !change.entry_mode().is_executable()
             })
-            .filter_map(|change| calculate_change_delta(repo, change, search_string))
+            .filter_map(|change| calculate_change_delta(repo, &change, search_string))
             .sum()
     })
 }
@@ -170,43 +166,27 @@ fn extract_commit_metadata(
     })
 }
 
+fn count_matches_in_blob(repo: &Repository, id: ObjectId, search_string: &str) -> Option<i64> {
+    repo.find_blob(id).ok()
+        .and_then(|blob| {
+            std::str::from_utf8(&blob.data)
+                .ok()
+                .map(|value| value.matches(search_string).count() as i64)
+        })
+}
+
 fn calculate_change_delta(repo: &Repository, change: &Change, search_string: &str) -> Option<i64> {
     match change {
-        // Addition: new file added
         Change::Addition { id, .. } => {
-            repo.find_blob(*id).ok()
-                .and_then(|blob| {
-                    std::str::from_utf8(&blob.data)
-                        .ok()
-                        .map(|value| value.matches(search_string).count() as i64)
-                })
+            count_matches_in_blob(repo, *id, search_string)
         }
-        // Deletion: file deleted
         Change::Deletion { id, .. } => {
-            repo.find_blob(*id).ok()
-                .and_then(|blob| {
-                    std::str::from_utf8(&blob.data)
-                        .ok()
-                        .map(|value| -(value.matches(search_string).count() as i64))
-                })
+            count_matches_in_blob(repo, *id, search_string).map(|count| -count)
         }
-        // Modification and Rewrite: calculate delta between old and new
         Change::Modification { previous_id, id, .. }
         | Change::Rewrite { source_id: previous_id, id, .. } => {
-            let old_count = repo.find_blob(*previous_id).ok()
-                .and_then(|blob| {
-                    std::str::from_utf8(&blob.data)
-                        .ok()
-                        .map(|value| value.matches(search_string).count() as i64)
-                })?;
-
-            let new_count = repo.find_blob(*id).ok()
-                .and_then(|blob| {
-                    std::str::from_utf8(&blob.data)
-                        .ok()
-                        .map(|value| value.matches(search_string).count() as i64)
-                })?;
-
+            let old_count = count_matches_in_blob(repo, *previous_id, search_string)?;
+            let new_count = count_matches_in_blob(repo, *id, search_string)?;
             Some(new_count - old_count)
         }
     }
