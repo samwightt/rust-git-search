@@ -39,26 +39,28 @@ pub fn timeline(path: &PathBuf, search_string: &str, output: &str) -> Result<()>
         .collect();
 
     // Sort by timestamp (oldest first) AFTER parallel processing
-    commit_deltas.sort_by_key(|data| data.timestamp);
+    commit_deltas.par_sort_by_key(|data| data.timestamp);
 
-    // Accumulate running totals sequentially
-    let mut running_total: i64 = 0;
+    // Accumulate running totals sequentially and write output
     let mut output_file = File::create(output)?;
 
-    for commit_data in commit_deltas {
-        running_total += commit_data.delta;
-
-        let entry = TimelineEntry {
-            date: commit_data.date,
-            commit_id: commit_data.commit_id,
-            message: commit_data.message,
-            author_name: commit_data.author_name,
-            author_email: commit_data.author_email,
-            count: running_total,
-        };
-
-        writeln!(output_file, "{}", serde_json::to_string(&entry)?)?;
-    }
+    commit_deltas.into_iter()
+        .scan(0i64, |running_total, commit_data| {
+            *running_total += commit_data.delta;
+            Some((*running_total, commit_data))
+        })
+        .try_for_each(|(count, commit_data)| -> Result<()> {
+            let entry = TimelineEntry {
+                date: commit_data.date,
+                commit_id: commit_data.commit_id,
+                message: commit_data.message,
+                author_name: commit_data.author_name,
+                author_email: commit_data.author_email,
+                count,
+            };
+            writeln!(output_file, "{}", serde_json::to_string(&entry)?)?;
+            Ok(())
+        })?;
 
     Ok(())
 }
@@ -166,43 +168,38 @@ fn calculate_change_delta(repo: &Repository, change: &CommitChange, search_strin
     match &change.change {
         // Addition: new file added
         DiffChange::Addition { id, .. } => {
-            let blob = repo.find_blob(*id).ok()?;
-            let value = std::str::from_utf8(&blob.data).ok()?;
-            let count = value.matches(search_string).count() as i64;
-            Some(count)
+            repo.find_blob(*id).ok()
+                .and_then(|blob| {
+                    std::str::from_utf8(&blob.data)
+                        .ok()
+                        .map(|value| value.matches(search_string).count() as i64)
+                })
         }
         // Deletion: file deleted
         DiffChange::Deletion { id, .. } => {
-            let blob = repo.find_blob(*id).ok()?;
-            let value = std::str::from_utf8(&blob.data).ok()?;
-            let count = value.matches(search_string).count() as i64;
-            Some(-count) // Negative delta for deletion
+            repo.find_blob(*id).ok()
+                .and_then(|blob| {
+                    std::str::from_utf8(&blob.data)
+                        .ok()
+                        .map(|value| -(value.matches(search_string).count() as i64))
+                })
         }
-        // Modification: file changed
-        DiffChange::Modification { previous_id, id, .. } => {
-            // Count in old version
-            let old_blob = repo.find_blob(*previous_id).ok()?;
-            let old_value = std::str::from_utf8(&old_blob.data).ok()?;
-            let old_count = old_value.matches(search_string).count() as i64;
+        // Modification and Rewrite: calculate delta between old and new
+        DiffChange::Modification { previous_id, id, .. }
+        | DiffChange::Rewrite { source_id: previous_id, id, .. } => {
+            let old_count = repo.find_blob(*previous_id).ok()
+                .and_then(|blob| {
+                    std::str::from_utf8(&blob.data)
+                        .ok()
+                        .map(|value| value.matches(search_string).count() as i64)
+                })?;
 
-            // Count in new version
-            let new_blob = repo.find_blob(*id).ok()?;
-            let new_value = std::str::from_utf8(&new_blob.data).ok()?;
-            let new_count = new_value.matches(search_string).count() as i64;
-
-            Some(new_count - old_count) // Delta is the difference
-        }
-        // Rewrite: treat as modification
-        DiffChange::Rewrite { source_id, id, .. } => {
-            // Count in old version
-            let old_blob = repo.find_blob(*source_id).ok()?;
-            let old_value = std::str::from_utf8(&old_blob.data).ok()?;
-            let old_count = old_value.matches(search_string).count() as i64;
-
-            // Count in new version
-            let new_blob = repo.find_blob(*id).ok()?;
-            let new_value = std::str::from_utf8(&new_blob.data).ok()?;
-            let new_count = new_value.matches(search_string).count() as i64;
+            let new_count = repo.find_blob(*id).ok()
+                .and_then(|blob| {
+                    std::str::from_utf8(&blob.data)
+                        .ok()
+                        .map(|value| value.matches(search_string).count() as i64)
+                })?;
 
             Some(new_count - old_count)
         }
