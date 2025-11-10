@@ -47,7 +47,7 @@ pub fn scan(path: &PathBuf, search_string: &str) -> Result<()> {
 }
 
 struct CommitChange {
-    commit_id: ObjectId,
+    _commit_id: ObjectId,
     change: Change,
 }
 
@@ -95,7 +95,7 @@ fn get_commit_changes(
             .unwrap()
             .into_iter()
             .map(|change| CommitChange {
-                commit_id: *commit_object_id,
+                _commit_id: *commit_object_id,
                 change,
             })
             .collect()
