@@ -3,7 +3,7 @@ use gix::{
 };
 use rayon::prelude::*;
 use serde::Serialize;
-use std::{cell::OnceCell, collections::HashSet, fs::File, io::Write, path::PathBuf};
+use std::{cell::OnceCell, fs::File, io::Write, path::PathBuf};
 
 use anyhow::Result;
 
@@ -13,22 +13,13 @@ pub fn timeline(path: &PathBuf, search_string: &str, output: &str) -> Result<()>
 
     let head_commit = repo.head()?.peel_to_commit_in_place()?;
 
-    // Collect all commits (ancestors + HEAD)
-    let mut commits_with_dupes: Vec<_> = head_commit
+    // Collect all commits (ancestors includes HEAD)
+    let commits: Vec<_> = head_commit
         .ancestors()
         .first_parent_only()
         .all()?
         .filter_map(|x| x.ok())
         .map(|x| x.id().detach())
-        .collect();
-
-    commits_with_dupes.push(head_commit.id().detach());
-
-    // Remove duplicates (gix sometimes returns HEAD in ancestors)
-    let mut seen = HashSet::new();
-    let commits: Vec<_> = commits_with_dupes
-        .into_iter()
-        .filter(|id| seen.insert(*id))
         .collect();
 
     // Process commits in parallel: calculate deltas, then extract metadata
@@ -97,10 +88,6 @@ struct DeltaResult {
     delta: i64,
 }
 
-struct CommitChange {
-    change: Change,
-}
-
 thread_local! {
     static REPO_CACHE: OnceCell<gix::Repository> = const { OnceCell::new() };
 }
@@ -134,17 +121,16 @@ fn calculate_commit_delta(
             .and_then(|x| x.tree().ok());
 
         // Calculate delta from changes
-        let changes: Vec<CommitChange> = repo
+        let changes: Vec<Change> = repo
             .diff_tree_to_tree(parent_tree.as_ref(), commit.tree().ok().as_ref(), None)
             .unwrap()
             .into_iter()
-            .map(|change| CommitChange { change })
             .collect();
 
         changes
             .iter()
             .filter(|change| {
-                change.change.entry_mode().is_blob() && !change.change.entry_mode().is_executable()
+                change.entry_mode().is_blob() && !change.entry_mode().is_executable()
             })
             .filter_map(|change| calculate_change_delta(repo, change, search_string))
             .sum()
@@ -184,12 +170,10 @@ fn extract_commit_metadata(
     })
 }
 
-fn calculate_change_delta(repo: &Repository, change: &CommitChange, search_string: &str) -> Option<i64> {
-    use gix::diff::tree_with_rewrites::Change as DiffChange;
-
-    match &change.change {
+fn calculate_change_delta(repo: &Repository, change: &Change, search_string: &str) -> Option<i64> {
+    match change {
         // Addition: new file added
-        DiffChange::Addition { id, .. } => {
+        Change::Addition { id, .. } => {
             repo.find_blob(*id).ok()
                 .and_then(|blob| {
                     std::str::from_utf8(&blob.data)
@@ -198,7 +182,7 @@ fn calculate_change_delta(repo: &Repository, change: &CommitChange, search_strin
                 })
         }
         // Deletion: file deleted
-        DiffChange::Deletion { id, .. } => {
+        Change::Deletion { id, .. } => {
             repo.find_blob(*id).ok()
                 .and_then(|blob| {
                     std::str::from_utf8(&blob.data)
@@ -207,8 +191,8 @@ fn calculate_change_delta(repo: &Repository, change: &CommitChange, search_strin
                 })
         }
         // Modification and Rewrite: calculate delta between old and new
-        DiffChange::Modification { previous_id, id, .. }
-        | DiffChange::Rewrite { source_id: previous_id, id, .. } => {
+        Change::Modification { previous_id, id, .. }
+        | Change::Rewrite { source_id: previous_id, id, .. } => {
             let old_count = repo.find_blob(*previous_id).ok()
                 .and_then(|blob| {
                     std::str::from_utf8(&blob.data)

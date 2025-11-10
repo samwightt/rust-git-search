@@ -13,6 +13,7 @@ pub fn scan(path: &PathBuf, search_string: &str) -> Result<()> {
     let repo = thread_safe_repo.to_thread_local();
 
     let head_commit = repo.head()?.peel_to_commit_in_place()?;
+    // Collect all commits (ancestors includes HEAD)
     let items: Vec<_> = head_commit
         .ancestors()
         .sorting(Sorting::ByCommitTime(CommitTimeOrder::OldestFirst))
@@ -20,7 +21,6 @@ pub fn scan(path: &PathBuf, search_string: &str) -> Result<()> {
         .all()?
         .filter_map(|x| x.ok())
         .map(|x| x.id().detach())
-        .chain(std::iter::once(head_commit.id().detach()))
         .collect();
 
     println!(
@@ -32,7 +32,7 @@ pub fn scan(path: &PathBuf, search_string: &str) -> Result<()> {
         .par_iter()
         .flat_map(|commit_id| get_commit_changes(&thread_safe_repo, commit_id))
         .filter(|change| {
-            change.change.entry_mode().is_blob() && !change.change.entry_mode().is_executable()
+            change.entry_mode().is_blob() && !change.entry_mode().is_executable()
         })
         .filter_map(|change| process_change(&thread_safe_repo, &change, search_string))
         .sum();
@@ -44,11 +44,6 @@ pub fn scan(path: &PathBuf, search_string: &str) -> Result<()> {
     );
 
     Ok(())
-}
-
-struct CommitChange {
-    commit_id: ObjectId,
-    change: Change,
 }
 
 thread_local! {
@@ -79,7 +74,7 @@ fn with_repo_cache<R, F: FnOnce(&Repository) -> R>(
 fn get_commit_changes(
     thread_safe_repo: &ThreadSafeRepository,
     commit_object_id: &ObjectId,
-) -> Vec<CommitChange> {
+) -> Vec<Change> {
     with_repo_cache(thread_safe_repo, |repo| {
         let commit = repo
             .find_commit(*commit_object_id)
@@ -94,17 +89,13 @@ fn get_commit_changes(
         repo.diff_tree_to_tree(parent_tree.as_ref(), commit.tree().ok().as_ref(), None)
             .unwrap()
             .into_iter()
-            .map(|change| CommitChange {
-                commit_id: *commit_object_id,
-                change,
-            })
             .collect()
     })
 }
 
-fn process_change(thread_safe_repo: &ThreadSafeRepository, change: &CommitChange, search_string: &str) -> Option<usize> {
+fn process_change(thread_safe_repo: &ThreadSafeRepository, change: &Change, search_string: &str) -> Option<usize> {
     with_repo_cache(thread_safe_repo, |repo| {
-        let (_, id) = change.change.entry_mode_and_id();
+        let (_, id) = change.entry_mode_and_id();
         let blob = repo.find_blob(id).unwrap();
         let value = std::str::from_utf8(&blob.data).ok()?;
         Some(value.matches(search_string).count())
