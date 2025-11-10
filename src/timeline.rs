@@ -217,13 +217,27 @@ mod tests {
     use super::*;
     use gix::objs::{Object, Blob, Tree, Commit};
     use gix::prelude::Write;
+    use std::sync::OnceLock;
 
-    /// Helper to get repository and ODB for testing
+    static TEST_REPO_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+
+    /// Get or create the test repository (created once for all tests)
+    fn get_base_repo_path() -> &'static std::path::Path {
+        let temp_dir = TEST_REPO_DIR.get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            gix::init(dir.path()).unwrap();
+            dir
+        });
+        temp_dir.path()
+    }
+
+    /// Helper to get an in-memory repository for testing
     fn get_test_repo() -> (ThreadSafeRepository, gix::OdbHandle) {
-        // Use the current repository for testing
-        let repo = ThreadSafeRepository::open(".").unwrap();
-        let objects = repo.to_thread_local().objects.clone();
-        (repo, objects)
+        let repo_path = get_base_repo_path();
+        let repo = gix::open(repo_path).unwrap().with_object_memory();
+        let thread_safe = repo.into_sync();
+        let objects = thread_safe.to_thread_local().objects.clone();
+        (thread_safe, objects)
     }
 
     /// Helper to create a tree with files
