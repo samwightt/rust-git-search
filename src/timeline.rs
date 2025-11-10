@@ -220,8 +220,6 @@ mod tests {
     #[test]
     fn test_calculate_commit_delta_addition() {
         let mut repo = TestRepo::new();
-
-        // Create first commit with a file containing "test" twice
         repo.commit("Initial commit", vec![("file.txt", "test test")]);
 
         let commit_id = repo.last_commit().unwrap();
@@ -232,14 +230,9 @@ mod tests {
     #[test]
     fn test_calculate_commit_delta_modification() {
         let mut repo = TestRepo::new();
-
-        // First commit: file with "test" once
         repo.commit("First commit", vec![("file.txt", "test")]);
-
-        // Second commit: modify file to have "test" three times
         repo.commit("Second commit", vec![("file.txt", "test test test")]);
 
-        // Delta should be +2 (from 1 to 3)
         let commit_id = repo.last_commit().unwrap();
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, "test");
         assert_eq!(delta, 2);
@@ -248,14 +241,9 @@ mod tests {
     #[test]
     fn test_calculate_commit_delta_deletion() {
         let mut repo = TestRepo::new();
-
-        // First commit: file with "test" three times
         repo.commit("First commit", vec![("file.txt", "test test test")]);
-
-        // Second commit: modify file to have "test" once
         repo.commit("Second commit", vec![("file.txt", "test")]);
 
-        // Delta should be -2 (from 3 to 1)
         let commit_id = repo.last_commit().unwrap();
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, "test");
         assert_eq!(delta, -2);
@@ -264,20 +252,15 @@ mod tests {
     #[test]
     fn test_calculate_commit_delta_multiple_files() {
         let mut repo = TestRepo::new();
-
-        // First commit: two files
         repo.commit("First commit", vec![
             ("file1.txt", "test"),
             ("file2.txt", "test test"),
         ]);
-
-        // Second commit: modify both files
         repo.commit("Second commit", vec![
-            ("file1.txt", "test test test"), // +2
-            ("file2.txt", "test"),             // -1
+            ("file1.txt", "test test test"),
+            ("file2.txt", "test"),
         ]);
 
-        // Total delta should be +1 (+2 - 1)
         let commit_id = repo.last_commit().unwrap();
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, "test");
         assert_eq!(delta, 1);
@@ -286,8 +269,6 @@ mod tests {
     #[test]
     fn test_calculate_commit_delta_no_matches() {
         let mut repo = TestRepo::new();
-
-        // Create commit with no matches
         repo.commit("Initial commit", vec![("file.txt", "hello world")]);
 
         let commit_id = repo.last_commit().unwrap();
@@ -298,13 +279,46 @@ mod tests {
     #[test]
     fn test_calculate_commit_delta_case_sensitive() {
         let mut repo = TestRepo::new();
-
-        // Create commit with mixed case
         repo.commit("Initial commit", vec![("file.txt", "Test test TEST")]);
 
-        // Only lowercase "test" matches
         let commit_id = repo.last_commit().unwrap();
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, "test");
         assert_eq!(delta, 1);
+    }
+
+    #[test]
+    fn test_calculate_commit_delta_mixed_operations() {
+        let mut repo = TestRepo::new();
+        repo.commit("First commit", vec![
+            ("a.txt", "test test"),
+            ("b.txt", "test"),
+            ("c.txt", "hello world"),
+        ]);
+        repo.commit("Second commit", vec![
+            ("a.txt", "test"),
+            ("b.txt", "test test test test"),
+            ("c.txt", "test world"),
+        ]);
+
+        let commit_id = repo.last_commit().unwrap();
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, "test");
+        assert_eq!(delta, 3);
+    }
+
+    #[test]
+    fn test_calculate_commit_delta_file_removal_and_addition() {
+        let mut repo = TestRepo::new();
+        repo.commit("First commit", vec![
+            ("old.txt", "test test test"),
+            ("keep.txt", "test"),
+        ]);
+        repo.commit("Second commit", vec![
+            ("keep.txt", "test test"),
+            ("new.txt", "test test test test"),
+        ]);
+
+        let commit_id = repo.last_commit().unwrap();
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, "test");
+        assert_eq!(delta, 2);
     }
 }

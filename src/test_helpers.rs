@@ -63,6 +63,8 @@ impl TestRepo {
             });
         }
 
+        entries.sort_by(|a, b| a.filename.cmp(&b.filename));
+
         let tree = Tree { entries };
         self.odb.write(&Object::Tree(tree)).unwrap()
     }
