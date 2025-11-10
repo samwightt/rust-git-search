@@ -200,3 +200,37 @@ fn test_timeline_multiple_changes_in_one_commit() {
     assert_eq!(json2["count"].as_i64().unwrap(), 5);
     assert!(json2["message"].as_str().unwrap().contains("Update both files"));
 }
+
+#[test]
+fn test_timeline_default_output_filename() {
+    let (_temp_dir, repo_path) = setup_test_repo();
+
+    // Create a commit
+    create_and_commit_file(
+        &repo_path,
+        "file1.txt",
+        "qux qux",
+        "Add file1",
+    );
+
+    // Run timeline without --output flag (should use default filename in current dir)
+    let mut cmd = Command::cargo_bin("git-history").unwrap();
+    cmd.arg("timeline")
+        .arg(repo_path.to_str().unwrap())
+        .arg("qux")
+        .current_dir(&repo_path);  // Run from repo directory so default file appears there
+
+    cmd.assert().success();
+
+    // Check that the default file was created in the repo directory
+    let default_file = repo_path.join("timeline.jsonl");
+    assert!(default_file.exists(), "Default output file should exist at {:?}", default_file);
+
+    // Verify the content
+    let content = fs::read_to_string(&default_file).expect("Failed to read default output file");
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 1, "Should have 1 commit in timeline");
+
+    let json: serde_json::Value = serde_json::from_str(lines[0]).expect("Failed to parse JSON");
+    assert_eq!(json["count"].as_i64().unwrap(), 2);
+}

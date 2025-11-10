@@ -22,7 +22,7 @@ enum Commands {
     Timeline {
         directory: String,
         search_string: String,
-        #[arg(long, short)]
+        #[arg(long, short, default_value = "timeline.jsonl")]
         output: String,
     },
 }
