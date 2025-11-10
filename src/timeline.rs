@@ -214,69 +214,158 @@ fn calculate_change_delta(repo: &Repository, change: &Change, search_string: &st
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_calculate_change_delta_addition() {
-        // Test that additions count positively
-        // We're testing the logic without needing a real repository
-        // by directly testing the counting logic
-        let content = "test test test";
-        let count = content.matches("test").count() as i64;
-        assert_eq!(count, 3);
+    use super::*;
+    use gix::objs::{Object, Blob, Tree, Commit};
+    use gix::prelude::Write;
+
+    /// Helper to get repository and ODB for testing
+    fn get_test_repo() -> (ThreadSafeRepository, gix::OdbHandle) {
+        // Use the current repository for testing
+        let repo = ThreadSafeRepository::open(".").unwrap();
+        let objects = repo.to_thread_local().objects.clone();
+        (repo, objects)
+    }
+
+    /// Helper to create a tree with files
+    fn create_tree(odb: &gix::OdbHandle, files: Vec<(&str, &str)>) -> gix::ObjectId {
+        let mut entries = Vec::new();
+
+        for (name, content) in files {
+            let blob = Blob { data: content.as_bytes().to_vec() };
+            let blob_id = odb.write(&Object::Blob(blob)).unwrap();
+
+            entries.push(gix::objs::tree::Entry {
+                mode: gix::objs::tree::EntryKind::Blob.into(),
+                filename: name.into(),
+                oid: blob_id,
+            });
+        }
+
+        let tree = Tree { entries };
+        odb.write(&Object::Tree(tree)).unwrap()
+    }
+
+    /// Helper to create a commit
+    fn create_commit(
+        odb: &gix::OdbHandle,
+        tree_id: gix::ObjectId,
+        parent_id: Option<gix::ObjectId>,
+        message: &str,
+    ) -> gix::ObjectId {
+        let signature = gix::actor::Signature {
+            name: "Test User".into(),
+            email: "test@example.com".into(),
+            time: gix::date::Time::new(1234567890, 0),
+        };
+
+        let parents = match parent_id {
+            Some(p) => vec![p].into(),
+            None => Default::default(),
+        };
+
+        let commit = Commit {
+            tree: tree_id,
+            parents,
+            author: signature.clone(),
+            committer: signature,
+            encoding: None,
+            message: message.into(),
+            extra_headers: vec![],
+        };
+
+        odb.write(&Object::Commit(commit)).unwrap()
     }
 
     #[test]
-    fn test_calculate_change_delta_deletion() {
-        // Test that deletions count negatively
-        let content = "test test";
-        let count = -(content.matches("test").count() as i64);
-        assert_eq!(count, -2);
+    fn test_calculate_commit_delta_addition() {
+        let (thread_safe_repo, odb) = get_test_repo();
+
+        // Create first commit with a file containing "test" twice
+        let tree_id = create_tree(&odb, vec![("file.txt", "test test")]);
+        let commit_id = create_commit(&odb, tree_id, None, "Initial commit");
+
+        let delta = calculate_commit_delta(&thread_safe_repo, &commit_id, "test");
+        assert_eq!(delta, 2);
     }
 
     #[test]
-    fn test_calculate_change_delta_modification() {
-        // Test modification delta calculation
-        let old_content = "test";
-        let new_content = "test test test test";
+    fn test_calculate_commit_delta_modification() {
+        let (thread_safe_repo, odb) = get_test_repo();
 
-        let old_count = old_content.matches("test").count() as i64;
-        let new_count = new_content.matches("test").count() as i64;
-        let delta = new_count - old_count;
+        // First commit: file with "test" once
+        let tree1_id = create_tree(&odb, vec![("file.txt", "test")]);
+        let commit1_id = create_commit(&odb, tree1_id, None, "First commit");
 
-        assert_eq!(delta, 3); // 4 - 1 = 3
+        // Second commit: modify file to have "test" three times
+        let tree2_id = create_tree(&odb, vec![("file.txt", "test test test")]);
+        let commit2_id = create_commit(&odb, tree2_id, Some(commit1_id), "Second commit");
+
+        // Delta should be +2 (from 1 to 3)
+        let delta = calculate_commit_delta(&thread_safe_repo, &commit2_id, "test");
+        assert_eq!(delta, 2);
     }
 
     #[test]
-    fn test_calculate_change_delta_no_matches() {
-        // Test with no matches
-        let content = "hello world";
-        let count = content.matches("test").count() as i64;
-        assert_eq!(count, 0);
+    fn test_calculate_commit_delta_deletion() {
+        let (thread_safe_repo, odb) = get_test_repo();
+
+        // First commit: file with "test" three times
+        let tree1_id = create_tree(&odb, vec![("file.txt", "test test test")]);
+        let commit1_id = create_commit(&odb, tree1_id, None, "First commit");
+
+        // Second commit: modify file to have "test" once
+        let tree2_id = create_tree(&odb, vec![("file.txt", "test")]);
+        let commit2_id = create_commit(&odb, tree2_id, Some(commit1_id), "Second commit");
+
+        // Delta should be -2 (from 3 to 1)
+        let delta = calculate_commit_delta(&thread_safe_repo, &commit2_id, "test");
+        assert_eq!(delta, -2);
     }
 
     #[test]
-    fn test_calculate_change_delta_case_sensitive() {
-        // Test that matching is case-sensitive
-        let content = "Test test TEST";
-        let count = content.matches("test").count() as i64;
-        assert_eq!(count, 1); // Only lowercase "test" matches
+    fn test_calculate_commit_delta_multiple_files() {
+        let (thread_safe_repo, odb) = get_test_repo();
+
+        // First commit: two files
+        let tree1_id = create_tree(&odb, vec![
+            ("file1.txt", "test"),
+            ("file2.txt", "test test"),
+        ]);
+        let commit1_id = create_commit(&odb, tree1_id, None, "First commit");
+
+        // Second commit: modify both files
+        let tree2_id = create_tree(&odb, vec![
+            ("file1.txt", "test test test"), // +2
+            ("file2.txt", "test"),             // -1
+        ]);
+        let commit2_id = create_commit(&odb, tree2_id, Some(commit1_id), "Second commit");
+
+        // Total delta should be +1 (+2 - 1)
+        let delta = calculate_commit_delta(&thread_safe_repo, &commit2_id, "test");
+        assert_eq!(delta, 1);
     }
 
     #[test]
-    fn test_calculate_change_delta_overlapping() {
-        // Test that overlapping matches don't count multiple times
-        let content = "testtest";
-        let count = content.matches("test").count() as i64;
-        assert_eq!(count, 2); // "test" appears twice, not overlapping
+    fn test_calculate_commit_delta_no_matches() {
+        let (thread_safe_repo, odb) = get_test_repo();
+
+        // Create commit with no matches
+        let tree_id = create_tree(&odb, vec![("file.txt", "hello world")]);
+        let commit_id = create_commit(&odb, tree_id, None, "Initial commit");
+
+        let delta = calculate_commit_delta(&thread_safe_repo, &commit_id, "test");
+        assert_eq!(delta, 0);
     }
 
     #[test]
-    fn test_calculate_change_delta_multiple_file_logic() {
-        // Test the accumulation logic for multiple files
-        let file1_delta = 3i64;  // +3 from file1
-        let file2_delta = -1i64; // -1 from file2
-        let file3_delta = 2i64;  // +2 from file3
+    fn test_calculate_commit_delta_case_sensitive() {
+        let (thread_safe_repo, odb) = get_test_repo();
 
-        let total: i64 = vec![file1_delta, file2_delta, file3_delta].iter().sum();
-        assert_eq!(total, 4);
+        // Create commit with mixed case
+        let tree_id = create_tree(&odb, vec![("file.txt", "Test test TEST")]);
+        let commit_id = create_commit(&odb, tree_id, None, "Initial commit");
+
+        let delta = calculate_commit_delta(&thread_safe_repo, &commit_id, "test");
+        assert_eq!(delta, 1); // Only lowercase "test" matches
     }
 }
