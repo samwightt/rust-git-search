@@ -74,7 +74,7 @@ struct TimelineEntry {
 }
 
 struct CommitData {
-    timestamp: i64,  // Unix timestamp for sorting
+    timestamp: i64,
     date: String,
     commit_id: String,
     message: String,
@@ -86,20 +86,6 @@ struct CommitData {
 struct DeltaResult {
     commit_id: ObjectId,
     delta: i64,
-}
-
-thread_local! {
-    static REPO_CACHE: OnceCell<gix::Repository> = const { OnceCell::new() };
-}
-
-fn with_repo_cache<R, F: FnOnce(&Repository) -> R>(
-    thread_safe_repo: &ThreadSafeRepository,
-    f: F,
-) -> R {
-    REPO_CACHE.with(|cache| {
-        let repo = cache.get_or_init(|| thread_safe_repo.to_thread_local());
-        f(repo)
-    })
 }
 
 fn calculate_commit_delta(
@@ -166,15 +152,6 @@ fn extract_commit_metadata(
     })
 }
 
-fn count_matches_in_blob(repo: &Repository, id: ObjectId, search_string: &str) -> Option<i64> {
-    repo.find_blob(id).ok()
-        .and_then(|blob| {
-            std::str::from_utf8(&blob.data)
-                .ok()
-                .map(|value| value.matches(search_string).count() as i64)
-        })
-}
-
 fn calculate_change_delta(repo: &Repository, change: &Change, search_string: &str) -> Option<i64> {
     match change {
         Change::Addition { id, .. } => {
@@ -190,6 +167,29 @@ fn calculate_change_delta(repo: &Repository, change: &Change, search_string: &st
             Some(new_count - old_count)
         }
     }
+}
+
+fn count_matches_in_blob(repo: &Repository, id: ObjectId, search_string: &str) -> Option<i64> {
+    repo.find_blob(id).ok()
+        .and_then(|blob| {
+            std::str::from_utf8(&blob.data)
+                .ok()
+                .map(|value| value.matches(search_string).count() as i64)
+        })
+}
+
+thread_local! {
+    static REPO_CACHE: OnceCell<gix::Repository> = const { OnceCell::new() };
+}
+
+fn with_repo_cache<R, F: FnOnce(&Repository) -> R>(
+    thread_safe_repo: &ThreadSafeRepository,
+    f: F,
+) -> R {
+    REPO_CACHE.with(|cache| {
+        let repo = cache.get_or_init(|| thread_safe_repo.to_thread_local());
+        f(repo)
+    })
 }
 
 #[cfg(test)]
