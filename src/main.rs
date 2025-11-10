@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::env;
 
 mod scan;
+mod timeline;
 
 #[derive(Parser)]
 #[command(name = "git-history")]
@@ -18,6 +19,12 @@ enum Commands {
         directory: String,
         search_string: String,
     },
+    Timeline {
+        directory: String,
+        search_string: String,
+        #[arg(long, short)]
+        output: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -32,6 +39,13 @@ fn main() -> Result<()> {
             println!("Scanning directory: {}", resolved_path.display());
             println!("Searching for: '{}'", search_string);
             scan::scan(&resolved_path, &search_string)?;
+        }
+        Commands::Timeline { directory, search_string, output } => {
+            let current_dir = env::current_dir()?;
+            let target_path = current_dir.join(&directory);
+            let resolved_path = target_path.canonicalize()?;
+
+            timeline::timeline(&resolved_path, &search_string, &output)?;
         }
     }
 
