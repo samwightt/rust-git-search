@@ -8,7 +8,7 @@ use std::{cell::OnceCell, path::PathBuf};
 
 use anyhow::Result;
 
-pub fn scan(path: &PathBuf) -> Result<()> {
+pub fn scan(path: &PathBuf, search_string: &str) -> Result<()> {
     let thread_safe_repo = ThreadSafeRepository::open(path)?;
     let repo = thread_safe_repo.to_thread_local();
 
@@ -34,11 +34,12 @@ pub fn scan(path: &PathBuf) -> Result<()> {
         .filter(|change| {
             change.change.entry_mode().is_blob() && !change.change.entry_mode().is_executable()
         })
-        .filter_map(|change| process_change(&thread_safe_repo, &change))
+        .filter_map(|change| process_change(&thread_safe_repo, &change, search_string))
         .sum();
 
     println!(
-        "Number of times the word 'fuck' appears in files anywhere in git history: {}",
+        "Number of times '{}' appears in files anywhere in git history: {}",
+        search_string,
         res.to_formatted_string(&Locale::en)
     );
 
@@ -101,11 +102,11 @@ fn get_commit_changes(
     })
 }
 
-fn process_change(thread_safe_repo: &ThreadSafeRepository, change: &CommitChange) -> Option<usize> {
+fn process_change(thread_safe_repo: &ThreadSafeRepository, change: &CommitChange, search_string: &str) -> Option<usize> {
     with_repo_cache(thread_safe_repo, |repo| {
         let (_, id) = change.change.entry_mode_and_id();
         let blob = repo.find_blob(id).unwrap();
         let value = std::str::from_utf8(&blob.data).ok()?;
-        Some(value.matches("fuck").count())
+        Some(value.matches(search_string).count())
     })
 }
