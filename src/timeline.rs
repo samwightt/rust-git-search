@@ -4,7 +4,7 @@ use gix::{
 use rayon::prelude::*;
 use regex::Regex;
 use serde::Serialize;
-use std::{cell::OnceCell, fs::File, io::Write, path::Path};
+use std::{cell::OnceCell, collections::HashMap, fs::File, io::Write, path::Path};
 
 use anyhow::Result;
 
@@ -53,7 +53,7 @@ impl SearchOptions {
     }
 }
 
-pub fn timeline(path: &Path, search_string: &str, output: &str, case_insensitive: bool, use_regex: bool) -> Result<()> {
+pub fn timeline(path: &Path, search_string: &str, output: &str, case_insensitive: bool, use_regex: bool, use_codeowners: bool) -> Result<()> {
     let search_options = SearchOptions::new(search_string, case_insensitive, use_regex)?;
     let thread_safe_repo = ThreadSafeRepository::open(path)?;
     let repo = thread_safe_repo.to_thread_local();
@@ -74,11 +74,7 @@ pub fn timeline(path: &Path, search_string: &str, output: &str, case_insensitive
     let mut commit_deltas: Vec<CommitData> = commits
         .par_iter()
         .map(|commit_id| {
-            let delta = calculate_commit_delta(&thread_safe_repo, commit_id, &search_options);
-            DeltaResult {
-                commit_id: *commit_id,
-                delta,
-            }
+            calculate_commit_delta(&thread_safe_repo, commit_id, &search_options, use_codeowners)
         })
         .map(|result| extract_commit_metadata(&thread_safe_repo, result))
         .collect();
@@ -88,24 +84,34 @@ pub fn timeline(path: &Path, search_string: &str, output: &str, case_insensitive
 
     // Accumulate running totals sequentially and write output
     let mut output_file = File::create(output)?;
+    let mut running_total = 0i64;
+    let mut owner_running_totals: HashMap<String, i64> = HashMap::new();
 
-    commit_deltas.into_iter()
-        .scan(0i64, |running_total, commit_data| {
-            *running_total += commit_data.delta;
-            Some((*running_total, commit_data))
-        })
-        .try_for_each(|(count, commit_data)| -> Result<()> {
-            let entry = TimelineEntry {
-                date: commit_data.date,
-                commit_id: commit_data.commit_id,
-                message: commit_data.message,
-                author_name: commit_data.author_name,
-                author_email: commit_data.author_email,
-                count,
-            };
-            writeln!(output_file, "{}", serde_json::to_string(&entry)?)?;
-            Ok(())
-        })?;
+    for commit_data in commit_deltas {
+        running_total += commit_data.delta;
+
+        let codeowners = if use_codeowners {
+            if let Some(ref owner_deltas) = commit_data.owner_deltas {
+                for (owner, delta) in owner_deltas {
+                    *owner_running_totals.entry(owner.clone()).or_insert(0) += delta;
+                }
+            }
+            Some(owner_running_totals.clone())
+        } else {
+            None
+        };
+
+        let entry = TimelineEntry {
+            date: commit_data.date,
+            commit_id: commit_data.commit_id,
+            message: commit_data.message,
+            author_name: commit_data.author_name,
+            author_email: commit_data.author_email,
+            count: running_total,
+            codeowners,
+        };
+        writeln!(output_file, "{}", serde_json::to_string(&entry)?)?;
+    }
 
     Ok(())
 }
@@ -118,6 +124,8 @@ struct TimelineEntry {
     author_name: String,
     author_email: String,
     count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    codeowners: Option<HashMap<String, i64>>,
 }
 
 struct CommitData {
@@ -128,18 +136,21 @@ struct CommitData {
     author_name: String,
     author_email: String,
     delta: i64,
+    owner_deltas: Option<HashMap<String, i64>>,
 }
 
 struct DeltaResult {
     commit_id: ObjectId,
     delta: i64,
+    owner_deltas: Option<HashMap<String, i64>>,
 }
 
 fn calculate_commit_delta(
     thread_safe_repo: &ThreadSafeRepository,
     commit_id: &ObjectId,
     search_options: &SearchOptions,
-) -> i64 {
+    use_codeowners: bool,
+) -> DeltaResult {
     with_repo_cache(thread_safe_repo, |repo| {
         let commit = repo
             .find_commit(*commit_id)
@@ -153,6 +164,16 @@ fn calculate_commit_delta(
             .and_then(|x| x.peel_to_commit().ok())
             .and_then(|x| x.tree().ok());
 
+        // Parse CODEOWNERS if needed
+        let codeowners_file = if use_codeowners {
+            read_codeowners_from_commit(repo, &commit)
+        } else {
+            None
+        };
+
+        let mut total_delta = 0i64;
+        let mut owner_deltas: HashMap<String, i64> = HashMap::new();
+
         // Calculate delta from changes
         repo
             .diff_tree_to_tree(parent_tree.as_ref(), commit.tree().ok().as_ref(), None)
@@ -161,8 +182,23 @@ fn calculate_commit_delta(
             .filter(|change| {
                 change.entry_mode().is_blob() && !change.entry_mode().is_executable()
             })
-            .filter_map(|change| calculate_change_delta(repo, &change, search_options))
-            .sum()
+            .for_each(|change| {
+                if let Some(delta) = calculate_change_delta(repo, &change, search_options) {
+                    total_delta += delta;
+
+                    if use_codeowners
+                        && let Some(path) = get_change_path(&change) {
+                            let owner = determine_owner(&codeowners_file, &path);
+                            *owner_deltas.entry(owner).or_insert(0) += delta;
+                        }
+                }
+            });
+
+        DeltaResult {
+            commit_id: *commit_id,
+            delta: total_delta,
+            owner_deltas: if use_codeowners { Some(owner_deltas) } else { None },
+        }
     })
 }
 
@@ -195,6 +231,7 @@ fn extract_commit_metadata(
             author_name,
             author_email,
             delta: result.delta,
+            owner_deltas: result.owner_deltas,
         }
     })
 }
@@ -238,6 +275,51 @@ fn with_repo_cache<R, F: FnOnce(&Repository) -> R>(
     })
 }
 
+fn read_codeowners_from_commit(_repo: &Repository, commit: &gix::Commit) -> Option<codeowners::Owners> {
+    let tree = commit.tree().ok()?;
+
+    // Try common CODEOWNERS locations: .github/CODEOWNERS, docs/CODEOWNERS, CODEOWNERS
+    let possible_paths = [".github/CODEOWNERS", "docs/CODEOWNERS", "CODEOWNERS"];
+
+    for path in possible_paths {
+        if let Some(entry) = tree.lookup_entry_by_path(path).ok().flatten()
+            && let Ok(blob) = entry.object().ok()?.try_into_blob()
+            && let Ok(content) = std::str::from_utf8(&blob.data) {
+                let owners = codeowners::from_reader(content.as_bytes());
+                return Some(owners);
+            }
+    }
+
+    None
+}
+
+fn get_change_path(change: &Change) -> Option<String> {
+    match change {
+        Change::Addition { location, .. }
+        | Change::Deletion { location, .. }
+        | Change::Modification { location, .. }
+        | Change::Rewrite { location, .. } => {
+            Some(location.to_string())
+        }
+    }
+}
+
+fn determine_owner(codeowners_file: &Option<codeowners::Owners>, path: &str) -> String {
+    if let Some(owners_file) = codeowners_file
+        && let Some(owners) = owners_file.of(path) {
+            // Join multiple owners with comma if there are multiple
+            let owner_names: Vec<String> = owners.iter()
+                .map(|o| o.to_string())
+                .collect();
+            if !owner_names.is_empty() {
+                return owner_names.join(", ");
+            }
+        }
+
+    // Default to "unowned" if no owner found
+    "unowned".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,8 +332,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 2);
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 2);
     }
 
     #[test]
@@ -262,8 +344,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 2);
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 2);
     }
 
     #[test]
@@ -274,8 +356,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, -2);
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, -2);
     }
 
     #[test]
@@ -292,8 +374,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 1);
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 1);
     }
 
     #[test]
@@ -303,8 +385,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 0);
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 0);
     }
 
     #[test]
@@ -314,8 +396,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 1);
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 1);
     }
 
     #[test]
@@ -334,8 +416,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 3);
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 3);
     }
 
     #[test]
@@ -352,8 +434,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 2);
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 2);
     }
 
     #[test]
@@ -363,8 +445,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::case_insensitive("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 3);
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 3);
     }
 
     #[test]
@@ -375,8 +457,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::case_insensitive("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 2);
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 2);
     }
 
     #[test]
@@ -386,8 +468,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::regex(r"test").unwrap();
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 2); // matches "test" and "testing"
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 2); // matches "test" and "testing"
     }
 
     #[test]
@@ -397,8 +479,8 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::regex(r"(?i)test").unwrap();
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 4); // matches "Test", "test", "TEST", "testing"
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 4); // matches "Test", "test", "TEST", "testing"
     }
 
     #[test]
@@ -408,7 +490,107 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::regex(r"test\d+").unwrap();
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
-        assert_eq!(delta, 2); // matches "test123" and "test456"
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+        assert_eq!(result.delta, 2); // matches "test123" and "test456"
+    }
+
+    #[test]
+    fn test_codeowners_basic() {
+        let mut repo = TestRepo::new();
+        repo.commit("Add CODEOWNERS", vec![
+            ("CODEOWNERS", "*.rs @rust-team\n*.md @docs-team\n"),
+            ("file.rs", "test"),
+        ]);
+
+        let commit_id = repo.last_commit().unwrap();
+        let search_options = SearchOptions::literal("test");
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, true);
+
+        assert_eq!(result.delta, 1);
+        assert!(result.owner_deltas.is_some());
+
+        let owner_deltas = result.owner_deltas.unwrap();
+        assert_eq!(owner_deltas.get("@rust-team"), Some(&1));
+    }
+
+    #[test]
+    fn test_codeowners_multiple_files() {
+        let mut repo = TestRepo::new();
+        repo.commit("Add files", vec![
+            ("CODEOWNERS", "*.rs @rust-team\n*.md @docs-team\n"),
+            ("code.rs", "test test"),
+            ("readme.md", "test"),
+        ]);
+
+        let commit_id = repo.last_commit().unwrap();
+        let search_options = SearchOptions::literal("test");
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, true);
+
+        assert_eq!(result.delta, 3);
+        assert!(result.owner_deltas.is_some());
+
+        let owner_deltas = result.owner_deltas.unwrap();
+        assert_eq!(owner_deltas.get("@rust-team"), Some(&2));
+        assert_eq!(owner_deltas.get("@docs-team"), Some(&1));
+    }
+
+    #[test]
+    fn test_codeowners_unowned_files() {
+        let mut repo = TestRepo::new();
+        repo.commit("Add files", vec![
+            ("CODEOWNERS", "*.rs @rust-team\n"),
+            ("code.rs", "test"),
+            ("other.txt", "test test"),
+        ]);
+
+        let commit_id = repo.last_commit().unwrap();
+        let search_options = SearchOptions::literal("test");
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, true);
+
+        assert_eq!(result.delta, 3);
+        assert!(result.owner_deltas.is_some());
+
+        let owner_deltas = result.owner_deltas.unwrap();
+        assert_eq!(owner_deltas.get("@rust-team"), Some(&1));
+        assert_eq!(owner_deltas.get("unowned"), Some(&2));
+    }
+
+    #[test]
+    fn test_codeowners_modification() {
+        let mut repo = TestRepo::new();
+        repo.commit("First commit", vec![
+            ("CODEOWNERS", "*.rs @rust-team\n"),
+            ("code.rs", "test"),
+        ]);
+        repo.commit("Second commit", vec![
+            ("CODEOWNERS", "*.rs @rust-team\n"),
+            ("code.rs", "test test test"),
+        ]);
+
+        let commit_id = repo.last_commit().unwrap();
+        let search_options = SearchOptions::literal("test");
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, true);
+
+        assert_eq!(result.delta, 2);
+        assert!(result.owner_deltas.is_some());
+
+        let owner_deltas = result.owner_deltas.unwrap();
+        assert_eq!(owner_deltas.get("@rust-team"), Some(&2));
+    }
+
+    #[test]
+    fn test_codeowners_disabled() {
+        let mut repo = TestRepo::new();
+        repo.commit("Add files", vec![
+            ("CODEOWNERS", "*.rs @rust-team\n"),
+            ("code.rs", "test"),
+        ]);
+
+        let commit_id = repo.last_commit().unwrap();
+        let search_options = SearchOptions::literal("test");
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, false);
+
+        assert_eq!(result.delta, 1);
+        assert!(result.owner_deltas.is_none());
     }
 }
