@@ -17,23 +17,42 @@ pub enum SearchOptions {
 impl SearchOptions {
     pub fn new(pattern: &str, case_insensitive: bool, use_regex: bool) -> Result<Self> {
         match (use_regex, case_insensitive) {
-            (true, case_insensitive) => {
-                let regex_pattern = if case_insensitive {
-                    format!("(?i){}", pattern)
-                } else {
-                    pattern.to_string()
-                };
-                Ok(SearchOptions::Regex {
-                    regex: Regex::new(&regex_pattern)?,
-                })
-            }
-            (false, true) => Ok(SearchOptions::CaseInsensitive {
-                lower_pattern: pattern.to_lowercase(),
-            }),
-            (false, false) => Ok(SearchOptions::Literal {
-                pattern: pattern.to_string(),
-            }),
+            (true, true) => Self::regex_case_insensitive(pattern),
+            (true, false) => Self::regex(pattern),
+            (false, true) => Ok(Self::case_insensitive(pattern)),
+            (false, false) => Ok(Self::literal(pattern)),
         }
+    }
+
+    pub fn literal(pattern: &str) -> Self {
+        SearchOptions::Literal {
+            pattern: pattern.to_string(),
+        }
+    }
+
+    pub fn case_insensitive(pattern: &str) -> Self {
+        SearchOptions::CaseInsensitive {
+            lower_pattern: pattern.to_lowercase(),
+        }
+    }
+
+    pub fn regex(pattern: &str) -> Result<Self> {
+        Self::regex_impl(pattern, false)
+    }
+
+    pub fn regex_case_insensitive(pattern: &str) -> Result<Self> {
+        Self::regex_impl(pattern, true)
+    }
+
+    fn regex_impl(pattern: &str, case_insensitive: bool) -> Result<Self> {
+        let regex_pattern = if case_insensitive {
+            format!("(?i){}", pattern)
+        } else {
+            pattern.to_string()
+        };
+        Ok(SearchOptions::Regex {
+            regex: Regex::new(&regex_pattern)?,
+        })
     }
 
     fn count_matches(&self, text: &str) -> i64 {
@@ -244,7 +263,7 @@ mod tests {
         repo.commit("Initial commit", vec![("file.txt", "test test")]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new("test", false, false).unwrap();
+        let search_options = SearchOptions::literal("test");
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 2);
     }
@@ -256,7 +275,7 @@ mod tests {
         repo.commit("Second commit", vec![("file.txt", "test test test")]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new("test", false, false).unwrap();
+        let search_options = SearchOptions::literal("test");
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 2);
     }
@@ -268,7 +287,7 @@ mod tests {
         repo.commit("Second commit", vec![("file.txt", "test")]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new("test", false, false).unwrap();
+        let search_options = SearchOptions::literal("test");
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, -2);
     }
@@ -286,7 +305,7 @@ mod tests {
         ]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new("test", false, false).unwrap();
+        let search_options = SearchOptions::literal("test");
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 1);
     }
@@ -297,7 +316,7 @@ mod tests {
         repo.commit("Initial commit", vec![("file.txt", "hello world")]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new("test", false, false).unwrap();
+        let search_options = SearchOptions::literal("test");
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 0);
     }
@@ -308,7 +327,7 @@ mod tests {
         repo.commit("Initial commit", vec![("file.txt", "Test test TEST")]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new("test", false, false).unwrap();
+        let search_options = SearchOptions::literal("test");
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 1);
     }
@@ -328,7 +347,7 @@ mod tests {
         ]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new("test", false, false).unwrap();
+        let search_options = SearchOptions::literal("test");
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 3);
     }
@@ -346,7 +365,7 @@ mod tests {
         ]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new("test", false, false).unwrap();
+        let search_options = SearchOptions::literal("test");
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 2);
     }
@@ -357,7 +376,7 @@ mod tests {
         repo.commit("Initial commit", vec![("file.txt", "Test test TEST")]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new("test", true, false).unwrap();
+        let search_options = SearchOptions::case_insensitive("test");
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 3);
     }
@@ -369,7 +388,7 @@ mod tests {
         repo.commit("Second commit", vec![("file.txt", "Test test TEST")]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new("test", true, false).unwrap();
+        let search_options = SearchOptions::case_insensitive("test");
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 2);
     }
@@ -380,7 +399,7 @@ mod tests {
         repo.commit("Initial commit", vec![("file.txt", "test Test testing")]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new(r"test", false, true).unwrap();
+        let search_options = SearchOptions::regex(r"test").unwrap();
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 2); // matches "test" and "testing"
     }
@@ -391,7 +410,7 @@ mod tests {
         repo.commit("Initial commit", vec![("file.txt", "Test test TEST testing")]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new(r"test", true, true).unwrap();
+        let search_options = SearchOptions::regex_case_insensitive(r"test").unwrap();
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 4); // matches "Test", "test", "TEST", "testing"
     }
@@ -402,7 +421,7 @@ mod tests {
         repo.commit("Initial commit", vec![("file.txt", "test123 test456 testing")]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::new(r"test\d+", false, true).unwrap();
+        let search_options = SearchOptions::regex(r"test\d+").unwrap();
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 2); // matches "test123" and "test456"
     }
