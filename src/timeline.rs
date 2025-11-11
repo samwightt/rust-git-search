@@ -4,6 +4,7 @@ use gix::{
 use lasso::{Spur, ThreadedRodeo};
 use rayon::prelude::*;
 use regex::Regex;
+use rustc_hash::FxHashMap;
 use serde::Serialize;
 use std::{cell::OnceCell, collections::HashMap, fs::File, io::Write, path::Path};
 
@@ -96,7 +97,7 @@ pub fn timeline(path: &Path, search_string: &str, output: &str, case_insensitive
     // Accumulate running totals sequentially and write output
     let mut output_file = File::create(output)?;
     let mut running_total = 0i64;
-    let mut owner_running_totals: HashMap<Spur, i64> = HashMap::new();
+    let mut owner_running_totals: FxHashMap<Spur, i64> = FxHashMap::default();
 
     for commit_data in commit_deltas {
         running_total += commit_data.delta;
@@ -153,13 +154,13 @@ struct CommitData {
     author_name: String,
     author_email: String,
     delta: i64,
-    owner_deltas: Option<HashMap<Spur, i64>>,
+    owner_deltas: Option<FxHashMap<Spur, i64>>,
 }
 
 struct DeltaResult {
     commit_id: ObjectId,
     delta: i64,
-    owner_deltas: Option<HashMap<Spur, i64>>,
+    owner_deltas: Option<FxHashMap<Spur, i64>>,
 }
 
 fn calculate_commit_delta(
@@ -189,7 +190,7 @@ fn calculate_commit_delta(
         };
 
         let mut total_delta = 0i64;
-        let mut owner_deltas: HashMap<Spur, i64> = HashMap::new();
+        let mut owner_deltas: FxHashMap<Spur, i64> = FxHashMap::default();
 
         // Calculate delta from changes
         repo
