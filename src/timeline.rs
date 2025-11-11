@@ -8,33 +8,43 @@ use std::{cell::OnceCell, fs::File, io::Write, path::Path};
 
 use anyhow::Result;
 
-#[derive(Clone)]
-pub struct SearchOptions {
-    case_insensitive: bool,
-    use_regex: bool,
-    pattern: String,
-    compiled_regex: Option<Regex>,
+pub enum SearchOptions {
+    Literal { pattern: String },
+    CaseInsensitive { lower_pattern: String },
+    Regex { regex: Regex },
 }
 
 impl SearchOptions {
     pub fn new(pattern: &str, case_insensitive: bool, use_regex: bool) -> Result<Self> {
-        let compiled_regex = if use_regex {
-            let regex_pattern = if case_insensitive {
-                format!("(?i){}", pattern)
-            } else {
-                pattern.to_string()
-            };
-            Some(Regex::new(&regex_pattern)?)
-        } else {
-            None
-        };
+        match (use_regex, case_insensitive) {
+            (true, case_insensitive) => {
+                let regex_pattern = if case_insensitive {
+                    format!("(?i){}", pattern)
+                } else {
+                    pattern.to_string()
+                };
+                Ok(SearchOptions::Regex {
+                    regex: Regex::new(&regex_pattern)?,
+                })
+            }
+            (false, true) => Ok(SearchOptions::CaseInsensitive {
+                lower_pattern: pattern.to_lowercase(),
+            }),
+            (false, false) => Ok(SearchOptions::Literal {
+                pattern: pattern.to_string(),
+            }),
+        }
+    }
 
-        Ok(SearchOptions {
-            case_insensitive,
-            use_regex,
-            pattern: pattern.to_string(),
-            compiled_regex,
-        })
+    fn count_matches(&self, text: &str) -> i64 {
+        match self {
+            SearchOptions::Regex { regex } => regex.find_iter(text).count() as i64,
+            SearchOptions::CaseInsensitive { lower_pattern } => {
+                let lower_text = text.to_lowercase();
+                lower_text.matches(lower_pattern.as_str()).count() as i64
+            }
+            SearchOptions::Literal { pattern } => text.matches(pattern.as_str()).count() as i64,
+        }
     }
 }
 
@@ -202,28 +212,11 @@ fn calculate_change_delta(repo: &Repository, change: &Change, search_options: &S
 }
 
 fn count_matches_in_blob(repo: &Repository, id: ObjectId, search_options: &SearchOptions) -> Option<i64> {
-    repo.find_blob(id).ok()
-        .and_then(|blob| {
-            std::str::from_utf8(&blob.data)
-                .ok()
-                .map(|value| {
-                    if search_options.use_regex {
-                        // Use regex matching
-                        search_options.compiled_regex
-                            .as_ref()
-                            .map(|regex| regex.find_iter(value).count() as i64)
-                            .unwrap_or(0)
-                    } else if search_options.case_insensitive {
-                        // Case-insensitive literal matching
-                        let lower_value = value.to_lowercase();
-                        let lower_pattern = search_options.pattern.to_lowercase();
-                        lower_value.matches(lower_pattern.as_str()).count() as i64
-                    } else {
-                        // Case-sensitive literal matching (original behavior)
-                        value.matches(search_options.pattern.as_str()).count() as i64
-                    }
-                })
-        })
+    repo.find_blob(id).ok().and_then(|blob| {
+        std::str::from_utf8(&blob.data)
+            .ok()
+            .map(|text| search_options.count_matches(text))
+    })
 }
 
 thread_local! {
