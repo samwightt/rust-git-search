@@ -194,3 +194,188 @@ fn test_timeline_regex_search() {
     // "testing" doesn't match because no digits
     assert_eq!(json2["count"].as_i64().unwrap(), 3);
 }
+
+#[test]
+fn test_timeline_with_codeowners() {
+    let (_temp_dir, repo_path) = setup_test_repo();
+
+    create_and_commit_files(
+        &repo_path,
+        &[
+            ("CODEOWNERS", "*.rs @rust-team\n*.md @docs-team\n"),
+            ("file.rs", "test test"),
+            ("readme.md", "test"),
+        ],
+        "First commit",
+    );
+
+    create_and_commit_files(
+        &repo_path,
+        &[
+            ("CODEOWNERS", "*.rs @rust-team\n*.md @docs-team\n"),
+            ("file.rs", "test test test"),
+            ("other.txt", "test test"),
+        ],
+        "Second commit",
+    );
+
+    let output_file = repo_path.join("timeline_codeowners.jsonl");
+
+    let mut cmd = Command::cargo_bin("git-history").unwrap();
+    cmd.arg("timeline")
+        .arg(repo_path.to_str().unwrap())
+        .arg("test")
+        .arg("--output")
+        .arg(output_file.to_str().unwrap())
+        .arg("--codeowners");
+
+    cmd.assert().success();
+
+    let content = fs::read_to_string(&output_file).expect("Failed to read output file");
+    let lines: Vec<&str> = content.lines().collect();
+
+    assert_eq!(lines.len(), 2, "Should have 2 commits in timeline");
+
+    let json1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let json2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+
+    // Verify codeowners field exists
+    assert!(json1["codeowners"].is_object(), "First commit should have codeowners field");
+    assert!(json2["codeowners"].is_object(), "Second commit should have codeowners field");
+
+    // First commit: 2 matches for @rust-team, 1 for @docs-team
+    let codeowners1 = json1["codeowners"].as_object().unwrap();
+    assert_eq!(codeowners1["@rust-team"].as_i64().unwrap(), 2);
+    assert_eq!(codeowners1["@docs-team"].as_i64().unwrap(), 1);
+
+    // Second commit: 3 matches for @rust-team (1 added), 1 for @docs-team (unchanged), 2 for unowned
+    let codeowners2 = json2["codeowners"].as_object().unwrap();
+    assert_eq!(codeowners2["@rust-team"].as_i64().unwrap(), 3);
+    assert_eq!(codeowners2["@docs-team"].as_i64().unwrap(), 1);
+    assert_eq!(codeowners2["unowned"].as_i64().unwrap(), 2);
+}
+
+#[test]
+fn test_timeline_without_codeowners_flag() {
+    let (_temp_dir, repo_path) = setup_test_repo();
+
+    create_and_commit_files(
+        &repo_path,
+        &[
+            ("CODEOWNERS", "*.rs @rust-team\n"),
+            ("file.rs", "test"),
+        ],
+        "First commit",
+    );
+
+    let output_file = repo_path.join("timeline_no_codeowners.jsonl");
+
+    let mut cmd = Command::cargo_bin("git-history").unwrap();
+    cmd.arg("timeline")
+        .arg(repo_path.to_str().unwrap())
+        .arg("test")
+        .arg("--output")
+        .arg(output_file.to_str().unwrap());
+
+    cmd.assert().success();
+
+    let content = fs::read_to_string(&output_file).expect("Failed to read output file");
+    let lines: Vec<&str> = content.lines().collect();
+
+    assert_eq!(lines.len(), 1, "Should have 1 commit in timeline");
+
+    let json1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+
+    // Verify codeowners field does NOT exist when flag is not set
+    assert!(json1.get("codeowners").is_none(), "Should not have codeowners field without flag");
+}
+
+#[test]
+fn test_timeline_codeowners_github_location() {
+    let (_temp_dir, repo_path) = setup_test_repo();
+
+    create_and_commit_files(
+        &repo_path,
+        &[
+            (".github/CODEOWNERS", "*.js @frontend-team\n"),
+            ("app.js", "test test test"),
+        ],
+        "First commit",
+    );
+
+    let output_file = repo_path.join("timeline_github_codeowners.jsonl");
+
+    let mut cmd = Command::cargo_bin("git-history").unwrap();
+    cmd.arg("timeline")
+        .arg(repo_path.to_str().unwrap())
+        .arg("test")
+        .arg("--output")
+        .arg(output_file.to_str().unwrap())
+        .arg("--codeowners");
+
+    cmd.assert().success();
+
+    let content = fs::read_to_string(&output_file).expect("Failed to read output file");
+    let lines: Vec<&str> = content.lines().collect();
+
+    let json1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+
+    // Verify codeowners from .github/CODEOWNERS is parsed
+    let codeowners1 = json1["codeowners"].as_object().unwrap();
+    assert_eq!(codeowners1["@frontend-team"].as_i64().unwrap(), 3);
+}
+
+#[test]
+fn test_timeline_codeowners_ownership_change() {
+    let (_temp_dir, repo_path) = setup_test_repo();
+
+    // First commit: owned by team1
+    create_and_commit_files(
+        &repo_path,
+        &[
+            ("CODEOWNERS", "*.rs @team1\n"),
+            ("code.rs", "test test test"),
+        ],
+        "First commit - team1 owns rs files",
+    );
+
+    // Second commit: ownership transferred to team2
+    create_and_commit_files(
+        &repo_path,
+        &[
+            ("CODEOWNERS", "*.rs @team2\n"),
+            ("code.rs", "test test test test test"),
+        ],
+        "Second commit - team2 owns rs files",
+    );
+
+    let output_file = repo_path.join("timeline_ownership_change.jsonl");
+
+    let mut cmd = Command::cargo_bin("git-history").unwrap();
+    cmd.arg("timeline")
+        .arg(repo_path.to_str().unwrap())
+        .arg("test")
+        .arg("--output")
+        .arg(output_file.to_str().unwrap())
+        .arg("--codeowners");
+
+    cmd.assert().success();
+
+    let content = fs::read_to_string(&output_file).expect("Failed to read output file");
+    let lines: Vec<&str> = content.lines().collect();
+
+    assert_eq!(lines.len(), 2, "Should have 2 commits in timeline");
+
+    let json1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let json2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+
+    // First commit: team1 should have 3 matches
+    let codeowners1 = json1["codeowners"].as_object().unwrap();
+    assert_eq!(codeowners1["@team1"].as_i64().unwrap(), 3);
+    assert!(codeowners1.get("@team2").is_none(), "team2 should not exist in first commit");
+
+    // Second commit: team1 still has 3 (from first commit), team2 has 2 (delta from second commit)
+    let codeowners2 = json2["codeowners"].as_object().unwrap();
+    assert_eq!(codeowners2["@team1"].as_i64().unwrap(), 3, "team1 running total from first commit");
+    assert_eq!(codeowners2["@team2"].as_i64().unwrap(), 2, "team2 gets delta from second commit");
+}
