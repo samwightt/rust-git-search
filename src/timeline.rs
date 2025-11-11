@@ -17,8 +17,7 @@ pub enum SearchOptions {
 impl SearchOptions {
     pub fn new(pattern: &str, case_insensitive: bool, use_regex: bool) -> Result<Self> {
         match (use_regex, case_insensitive) {
-            (true, true) => Self::regex_case_insensitive(pattern),
-            (true, false) => Self::regex(pattern),
+            (true, _) => Self::regex(pattern), // case_insensitive ignored for regex
             (false, true) => Ok(Self::case_insensitive(pattern)),
             (false, false) => Ok(Self::literal(pattern)),
         }
@@ -37,21 +36,8 @@ impl SearchOptions {
     }
 
     pub fn regex(pattern: &str) -> Result<Self> {
-        Self::regex_impl(pattern, false)
-    }
-
-    pub fn regex_case_insensitive(pattern: &str) -> Result<Self> {
-        Self::regex_impl(pattern, true)
-    }
-
-    fn regex_impl(pattern: &str, case_insensitive: bool) -> Result<Self> {
-        let regex_pattern = if case_insensitive {
-            format!("(?i){}", pattern)
-        } else {
-            pattern.to_string()
-        };
         Ok(SearchOptions::Regex {
-            regex: Regex::new(&regex_pattern)?,
+            regex: Regex::new(pattern)?,
         })
     }
 
@@ -410,7 +396,7 @@ mod tests {
         repo.commit("Initial commit", vec![("file.txt", "Test test TEST testing")]);
 
         let commit_id = repo.last_commit().unwrap();
-        let search_options = SearchOptions::regex_case_insensitive(r"test").unwrap();
+        let search_options = SearchOptions::regex(r"(?i)test").unwrap();
         let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
         assert_eq!(delta, 4); // matches "Test", "test", "TEST", "testing"
     }

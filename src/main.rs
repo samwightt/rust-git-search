@@ -48,6 +48,11 @@ fn main() -> Result<()> {
         Commands::Timeline { directory, search_string, output, case_insensitive, regex } => {
             let resolved_path = env::current_dir()?.join(&directory).canonicalize()?;
 
+            if regex && case_insensitive {
+                eprintln!("Warning: -i/--case-insensitive flag is ignored when using --regex.");
+                eprintln!("         Use (?i) in your regex pattern for case-insensitive matching.");
+            }
+
             timeline::timeline(&resolved_path, &search_string, &output, case_insensitive, regex)?;
         }
     }
