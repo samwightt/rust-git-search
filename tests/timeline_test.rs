@@ -103,3 +103,94 @@ fn test_timeline_default_output_filename() {
     let json: serde_json::Value = serde_json::from_str(lines[0]).expect("Failed to parse JSON");
     assert!(json["count"].is_number());
 }
+
+#[test]
+fn test_timeline_case_insensitive_search() {
+    let (_temp_dir, repo_path) = setup_test_repo();
+
+    create_and_commit_file(
+        &repo_path,
+        "file1.txt",
+        "Test test TEST",
+        "First commit",
+    );
+
+    create_and_commit_file(
+        &repo_path,
+        "file2.txt",
+        "testing TeSt",
+        "Second commit",
+    );
+
+    let output_file = repo_path.join("timeline_case_insensitive.jsonl");
+
+    let mut cmd = Command::cargo_bin("git-history").unwrap();
+    cmd.arg("timeline")
+        .arg(repo_path.to_str().unwrap())
+        .arg("test")
+        .arg("--output")
+        .arg(output_file.to_str().unwrap())
+        .arg("-i");
+
+    cmd.assert().success();
+
+    let content = fs::read_to_string(&output_file).expect("Failed to read output file");
+    let lines: Vec<&str> = content.lines().collect();
+
+    assert_eq!(lines.len(), 2, "Should have 2 commits in timeline");
+
+    let json1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let json2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+
+    // First commit: "Test test TEST" = 3 matches (case-insensitive)
+    assert_eq!(json1["count"].as_i64().unwrap(), 3);
+
+    // Second commit: previous 3 + "testing TeSt" = 3 + 2 = 5 matches total
+    assert_eq!(json2["count"].as_i64().unwrap(), 5);
+}
+
+#[test]
+fn test_timeline_regex_search() {
+    let (_temp_dir, repo_path) = setup_test_repo();
+
+    create_and_commit_file(
+        &repo_path,
+        "file1.txt",
+        "test123 test456",
+        "First commit",
+    );
+
+    create_and_commit_file(
+        &repo_path,
+        "file2.txt",
+        "test789 testing",
+        "Second commit",
+    );
+
+    let output_file = repo_path.join("timeline_regex.jsonl");
+
+    let mut cmd = Command::cargo_bin("git-history").unwrap();
+    cmd.arg("timeline")
+        .arg(repo_path.to_str().unwrap())
+        .arg(r"test\d+")
+        .arg("--output")
+        .arg(output_file.to_str().unwrap())
+        .arg("--regex");
+
+    cmd.assert().success();
+
+    let content = fs::read_to_string(&output_file).expect("Failed to read output file");
+    let lines: Vec<&str> = content.lines().collect();
+
+    assert_eq!(lines.len(), 2, "Should have 2 commits in timeline");
+
+    let json1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let json2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+
+    // First commit: "test123 test456" = 2 matches (test\d+)
+    assert_eq!(json1["count"].as_i64().unwrap(), 2);
+
+    // Second commit: previous 2 + "test789" = 2 + 1 = 3 matches total
+    // "testing" doesn't match because no digits
+    assert_eq!(json2["count"].as_i64().unwrap(), 3);
+}

@@ -457,6 +457,7 @@ dependencies = [
  "num-format",
  "predicates",
  "rayon",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
