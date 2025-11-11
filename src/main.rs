@@ -27,6 +27,10 @@ enum Commands {
         search_string: String,
         #[arg(long, short, default_value = "timeline.jsonl")]
         output: String,
+        #[arg(long, short = 'i')]
+        case_insensitive: bool,
+        #[arg(long)]
+        regex: bool,
     },
 }
 
@@ -41,10 +45,15 @@ fn main() -> Result<()> {
             println!("Searching for: '{}'", search_string);
             scan::scan(&resolved_path, &search_string)?;
         }
-        Commands::Timeline { directory, search_string, output } => {
+        Commands::Timeline { directory, search_string, output, case_insensitive, regex } => {
             let resolved_path = env::current_dir()?.join(&directory).canonicalize()?;
 
-            timeline::timeline(&resolved_path, &search_string, &output)?;
+            if regex && case_insensitive {
+                eprintln!("Warning: -i/--case-insensitive flag is ignored when using --regex.");
+                eprintln!("         Use (?i) in your regex pattern for case-insensitive matching.");
+            }
+
+            timeline::timeline(&resolved_path, &search_string, &output, case_insensitive, regex)?;
         }
     }
 
