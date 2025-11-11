@@ -101,3 +101,127 @@ fn process_change(thread_safe_repo: &ThreadSafeRepository, change: &Change, sear
         Some(value.matches(search_string).count())
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::TestRepo;
+
+    #[test]
+    fn test_get_commit_changes_addition() {
+        let mut repo = TestRepo::new();
+        let commit_id = repo.commit("Initial commit", vec![("file.txt", "test content")]);
+
+        let changes = get_commit_changes(&repo.thread_safe_repo, &commit_id);
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn test_get_commit_changes_multiple_files() {
+        let mut repo = TestRepo::new();
+        let commit_id = repo.commit("Multiple files", vec![
+            ("file1.txt", "content1"),
+            ("file2.txt", "content2"),
+            ("file3.txt", "content3"),
+        ]);
+
+        let changes = get_commit_changes(&repo.thread_safe_repo, &commit_id);
+        assert_eq!(changes.len(), 3);
+    }
+
+    #[test]
+    fn test_get_commit_changes_modification() {
+        let mut repo = TestRepo::new();
+        repo.commit("First commit", vec![("file.txt", "original content")]);
+        let commit_id = repo.commit("Second commit", vec![("file.txt", "modified content")]);
+
+        let changes = get_commit_changes(&repo.thread_safe_repo, &commit_id);
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn test_get_commit_changes_mixed() {
+        let mut repo = TestRepo::new();
+        repo.commit("First commit", vec![
+            ("old.txt", "old content"),
+            ("keep.txt", "keep content"),
+        ]);
+        let commit_id = repo.commit("Second commit", vec![
+            ("keep.txt", "modified keep content"),
+            ("new.txt", "new content"),
+        ]);
+
+        let changes = get_commit_changes(&repo.thread_safe_repo, &commit_id);
+        assert_eq!(changes.len(), 3);
+    }
+
+    #[test]
+    fn test_process_change_single_match() {
+        let mut repo = TestRepo::new();
+        let commit_id = repo.commit("Initial commit", vec![("file.txt", "test content")]);
+
+        let changes = get_commit_changes(&repo.thread_safe_repo, &commit_id);
+        let count = process_change(&repo.thread_safe_repo, &changes[0], "test");
+        assert_eq!(count, Some(1));
+    }
+
+    #[test]
+    fn test_process_change_multiple_matches() {
+        let mut repo = TestRepo::new();
+        let commit_id = repo.commit("Initial commit", vec![("file.txt", "test test test")]);
+
+        let changes = get_commit_changes(&repo.thread_safe_repo, &commit_id);
+        let count = process_change(&repo.thread_safe_repo, &changes[0], "test");
+        assert_eq!(count, Some(3));
+    }
+
+    #[test]
+    fn test_process_change_no_matches() {
+        let mut repo = TestRepo::new();
+        let commit_id = repo.commit("Initial commit", vec![("file.txt", "hello world")]);
+
+        let changes = get_commit_changes(&repo.thread_safe_repo, &commit_id);
+        let count = process_change(&repo.thread_safe_repo, &changes[0], "test");
+        assert_eq!(count, Some(0));
+    }
+
+    #[test]
+    fn test_process_change_case_sensitive() {
+        let mut repo = TestRepo::new();
+        let commit_id = repo.commit("Initial commit", vec![("file.txt", "Test test TEST")]);
+
+        let changes = get_commit_changes(&repo.thread_safe_repo, &commit_id);
+        let count = process_change(&repo.thread_safe_repo, &changes[0], "test");
+        assert_eq!(count, Some(1));
+    }
+
+    #[test]
+    fn test_process_change_partial_word_matches() {
+        let mut repo = TestRepo::new();
+        let commit_id = repo.commit("Initial commit", vec![("file.txt", "test testing tested")]);
+
+        let changes = get_commit_changes(&repo.thread_safe_repo, &commit_id);
+        let count = process_change(&repo.thread_safe_repo, &changes[0], "test");
+        assert_eq!(count, Some(3));
+    }
+
+    #[test]
+    fn test_process_change_multiline_content() {
+        let mut repo = TestRepo::new();
+        let commit_id = repo.commit("Initial commit", vec![("file.txt", "line1 test\nline2 test\nline3")]);
+
+        let changes = get_commit_changes(&repo.thread_safe_repo, &commit_id);
+        let count = process_change(&repo.thread_safe_repo, &changes[0], "test");
+        assert_eq!(count, Some(2));
+    }
+
+    #[test]
+    fn test_process_change_empty_string_search() {
+        let mut repo = TestRepo::new();
+        let commit_id = repo.commit("Initial commit", vec![("file.txt", "content")]);
+
+        let changes = get_commit_changes(&repo.thread_safe_repo, &commit_id);
+        let count = process_change(&repo.thread_safe_repo, &changes[0], "");
+        assert_eq!(count, Some(8));
+    }
+}
