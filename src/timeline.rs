@@ -87,6 +87,9 @@ pub fn timeline(path: &Path, search_string: &str, output: &str, case_insensitive
         .map(|result| extract_commit_metadata(&thread_safe_repo, result))
         .collect();
 
+    // Convert to resolver (read-only) after all writes are done
+    let resolver = interner.map(|rodeo| rodeo.into_resolver());
+
     // Sort by timestamp (oldest first) AFTER parallel processing
     commit_deltas.par_sort_by_key(|data| data.timestamp);
 
@@ -98,7 +101,7 @@ pub fn timeline(path: &Path, search_string: &str, output: &str, case_insensitive
     for commit_data in commit_deltas {
         running_total += commit_data.delta;
 
-        let codeowners = if let Some(ref interner) = interner {
+        let codeowners = if let Some(ref resolver) = resolver {
             if let Some(ref owner_deltas) = commit_data.owner_deltas {
                 for (owner_key, delta) in owner_deltas {
                     *owner_running_totals.entry(*owner_key).or_insert(0) += delta;
@@ -108,7 +111,7 @@ pub fn timeline(path: &Path, search_string: &str, output: &str, case_insensitive
             Some(
                 owner_running_totals
                     .iter()
-                    .map(|(key, value)| (interner.resolve(key).to_string(), *value))
+                    .map(|(key, value)| (resolver.resolve(key).to_string(), *value))
                     .collect()
             )
         } else {
@@ -294,8 +297,8 @@ fn with_repo_cache<R, F: FnOnce(&Repository) -> R>(
 fn read_codeowners_from_commit(_repo: &Repository, commit: &gix::Commit) -> Option<codeowners::Owners> {
     let tree = commit.tree().ok()?;
 
-    // Try common CODEOWNERS locations: .github/CODEOWNERS, docs/CODEOWNERS, CODEOWNERS
-    let possible_paths = [".github/CODEOWNERS", "docs/CODEOWNERS", "CODEOWNERS"];
+    // Try common CODEOWNERS locations in GitHub priority order
+    let possible_paths = ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"];
 
     for path in possible_paths {
         if let Some(entry) = tree.lookup_entry_by_path(path).ok().flatten()
@@ -615,5 +618,59 @@ mod tests {
 
         assert_eq!(result.delta, 1);
         assert!(result.owner_deltas.is_none());
+    }
+
+    #[test]
+    fn test_codeowners_multiple_owners_single_file() {
+        let mut repo = TestRepo::new();
+        repo.commit("Add files", vec![
+            ("CODEOWNERS", "*.rs @team1 @team2\n"),
+            ("code.rs", "test test test"),
+        ]);
+
+        let commit_id = repo.last_commit().unwrap();
+        let search_options = SearchOptions::literal("test");
+        let interner = ThreadedRodeo::new();
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, Some(&interner));
+
+        assert_eq!(result.delta, 3);
+        assert!(result.owner_deltas.is_some());
+
+        let owner_deltas = result.owner_deltas.unwrap();
+        let team1_key = interner.get("@team1").unwrap();
+        let team2_key = interner.get("@team2").unwrap();
+        // Both teams should get all 3 matches
+        assert_eq!(owner_deltas.get(&team1_key), Some(&3));
+        assert_eq!(owner_deltas.get(&team2_key), Some(&3));
+    }
+
+    #[test]
+    fn test_codeowners_ownership_change() {
+        let mut repo = TestRepo::new();
+        // First commit: owned by team1
+        repo.commit("First commit", vec![
+            ("CODEOWNERS", "*.rs @team1\n"),
+            ("code.rs", "test test"),
+        ]);
+        // Second commit: ownership changed to team2
+        repo.commit("Second commit", vec![
+            ("CODEOWNERS", "*.rs @team2\n"),
+            ("code.rs", "test test test"),
+        ]);
+
+        let commit_id = repo.last_commit().unwrap();
+        let search_options = SearchOptions::literal("test");
+        let interner = ThreadedRodeo::new();
+        let result = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, Some(&interner));
+
+        assert_eq!(result.delta, 1);
+        assert!(result.owner_deltas.is_some());
+
+        let owner_deltas = result.owner_deltas.unwrap();
+        let team2_key = interner.get("@team2").unwrap();
+        // Only team2 should get the delta in this commit (per-commit parsing)
+        assert_eq!(owner_deltas.get(&team2_key), Some(&1));
+        // team1 should not appear
+        assert!(interner.get("@team1").is_none() || owner_deltas.get(&interner.get("@team1").unwrap()).is_none());
     }
 }

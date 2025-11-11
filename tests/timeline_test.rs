@@ -324,3 +324,58 @@ fn test_timeline_codeowners_github_location() {
     let codeowners1 = json1["codeowners"].as_object().unwrap();
     assert_eq!(codeowners1["@frontend-team"].as_i64().unwrap(), 3);
 }
+
+#[test]
+fn test_timeline_codeowners_ownership_change() {
+    let (_temp_dir, repo_path) = setup_test_repo();
+
+    // First commit: owned by team1
+    create_and_commit_files(
+        &repo_path,
+        &[
+            ("CODEOWNERS", "*.rs @team1\n"),
+            ("code.rs", "test test test"),
+        ],
+        "First commit - team1 owns rs files",
+    );
+
+    // Second commit: ownership transferred to team2
+    create_and_commit_files(
+        &repo_path,
+        &[
+            ("CODEOWNERS", "*.rs @team2\n"),
+            ("code.rs", "test test test test test"),
+        ],
+        "Second commit - team2 owns rs files",
+    );
+
+    let output_file = repo_path.join("timeline_ownership_change.jsonl");
+
+    let mut cmd = Command::cargo_bin("git-history").unwrap();
+    cmd.arg("timeline")
+        .arg(repo_path.to_str().unwrap())
+        .arg("test")
+        .arg("--output")
+        .arg(output_file.to_str().unwrap())
+        .arg("--codeowners");
+
+    cmd.assert().success();
+
+    let content = fs::read_to_string(&output_file).expect("Failed to read output file");
+    let lines: Vec<&str> = content.lines().collect();
+
+    assert_eq!(lines.len(), 2, "Should have 2 commits in timeline");
+
+    let json1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let json2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+
+    // First commit: team1 should have 3 matches
+    let codeowners1 = json1["codeowners"].as_object().unwrap();
+    assert_eq!(codeowners1["@team1"].as_i64().unwrap(), 3);
+    assert!(codeowners1.get("@team2").is_none(), "team2 should not exist in first commit");
+
+    // Second commit: team1 still has 3 (from first commit), team2 has 2 (delta from second commit)
+    let codeowners2 = json2["codeowners"].as_object().unwrap();
+    assert_eq!(codeowners2["@team1"].as_i64().unwrap(), 3, "team1 running total from first commit");
+    assert_eq!(codeowners2["@team2"].as_i64().unwrap(), 2, "team2 gets delta from second commit");
+}
