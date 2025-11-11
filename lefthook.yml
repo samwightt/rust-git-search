@@ -1,0 +1,14 @@
+# Lefthook configuration for Rust development workflow
+# See https://github.com/evilmartians/lefthook for more info
+
+pre-commit:
+  commands:
+    check:
+      run: cargo check
+    clippy:
+      run: cargo clippy -- -D warnings
+
+pre-push:
+  commands:
+    test:
+      run: cargo test
