@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PROJECT_DIR}/.claude/stop-hook-review.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
