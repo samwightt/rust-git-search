@@ -53,7 +53,13 @@ fn main() -> Result<()> {
                 eprintln!("         Use (?i) in your regex pattern for case-insensitive matching.");
             }
 
-            timeline::timeline(&resolved_path, &search_string, &output, case_insensitive, regex)?;
+            timeline::timeline(timeline::TimelineOptions {
+                path: resolved_path,
+                search_string,
+                output,
+                case_insensitive,
+                use_regex: regex,
+            })?;
         }
     }
 

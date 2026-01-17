@@ -4,9 +4,17 @@ use gix::{
 use rayon::prelude::*;
 use regex::Regex;
 use serde::Serialize;
-use std::{cell::OnceCell, fs::File, io::Write, path::Path};
+use std::{cell::OnceCell, fs::File, io::Write, path::PathBuf};
 
 use anyhow::Result;
+
+pub struct TimelineOptions {
+    pub path: PathBuf,
+    pub search_string: String,
+    pub output: String,
+    pub case_insensitive: bool,
+    pub use_regex: bool,
+}
 
 pub enum SearchOptions {
     Literal { pattern: String },
@@ -53,9 +61,9 @@ impl SearchOptions {
     }
 }
 
-pub fn timeline(path: &Path, search_string: &str, output: &str, case_insensitive: bool, use_regex: bool) -> Result<()> {
-    let search_options = SearchOptions::new(search_string, case_insensitive, use_regex)?;
-    let thread_safe_repo = ThreadSafeRepository::open(path)?;
+pub fn timeline(options: TimelineOptions) -> Result<()> {
+    let search_options = SearchOptions::new(&options.search_string, options.case_insensitive, options.use_regex)?;
+    let thread_safe_repo = ThreadSafeRepository::open(&options.path)?;
     let repo = thread_safe_repo.to_thread_local();
 
     let head_commit = repo.head()?.peel_to_commit_in_place()?;
@@ -87,7 +95,7 @@ pub fn timeline(path: &Path, search_string: &str, output: &str, case_insensitive
     commit_deltas.par_sort_by_key(|data| data.timestamp);
 
     // Accumulate running totals sequentially and write output
-    let mut output_file = File::create(output)?;
+    let mut output_file = File::create(&options.output)?;
 
     commit_deltas.into_iter()
         .scan(0i64, |running_total, commit_data| {
