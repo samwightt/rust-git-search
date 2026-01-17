@@ -125,12 +125,6 @@ pub fn delete_and_commit_file(repo_path: &PathBuf, filename: &str, commit_msg: &
 pub fn create_and_commit_files(repo_path: &PathBuf, files: &[(&str, &str)], commit_msg: &str) {
     for (filename, content) in files {
         let file_path = repo_path.join(filename);
-
-        // Create parent directories if needed
-        if let Some(parent) = file_path.parent() {
-            fs::create_dir_all(parent).expect("Failed to create parent directories");
-        }
-
         fs::write(&file_path, content).expect("Failed to write file");
 
         let output = std::process::Command::new("git")
