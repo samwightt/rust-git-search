@@ -194,3 +194,55 @@ fn test_timeline_regex_search() {
     // "testing" doesn't match because no digits
     assert_eq!(json2["count"].as_i64().unwrap(), 3);
 }
+
+#[test]
+fn test_timeline_glob_filter() {
+    let (_temp_dir, repo_path) = setup_test_repo();
+
+    create_and_commit_files(
+        &repo_path,
+        &[
+            ("app.rb", "test test"),
+            ("lib.rb", "test"),
+            ("readme.txt", "test test test"),
+        ],
+        "First commit",
+    );
+
+    create_and_commit_files(
+        &repo_path,
+        &[
+            ("app.rb", "test test test"),
+            ("other.py", "test test test test"),
+        ],
+        "Second commit",
+    );
+
+    let output_file = repo_path.join("timeline_glob.jsonl");
+
+    let mut cmd = Command::cargo_bin("git-history").unwrap();
+    cmd.arg("timeline")
+        .arg(repo_path.to_str().unwrap())
+        .arg("test")
+        .arg("--output")
+        .arg(output_file.to_str().unwrap())
+        .arg("--glob")
+        .arg("*.rb");
+
+    cmd.assert().success();
+
+    let content = fs::read_to_string(&output_file).expect("Failed to read output file");
+    let lines: Vec<&str> = content.lines().collect();
+
+    assert_eq!(lines.len(), 2, "Should have 2 commits in timeline");
+
+    let json1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let json2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+
+    // First commit: only .rb files counted: "test test" (2) + "test" (1) = 3
+    assert_eq!(json1["count"].as_i64().unwrap(), 3);
+
+    // Second commit: previous 3 + delta from app.rb (3 - 2 = 1) = 4
+    // other.py is excluded by glob
+    assert_eq!(json2["count"].as_i64().unwrap(), 4);
+}

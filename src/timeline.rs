@@ -1,6 +1,7 @@
 use gix::{
-    ObjectId, Repository, ThreadSafeRepository, diff::tree_with_rewrites::Change,
+    ObjectId, Repository, ThreadSafeRepository, bstr::ByteSlice, diff::tree_with_rewrites::Change,
 };
+use globset::{Glob, GlobMatcher};
 use rayon::prelude::*;
 use regex::Regex;
 use serde::Serialize;
@@ -14,6 +15,7 @@ pub struct TimelineOptions {
     pub output: String,
     pub case_insensitive: bool,
     pub use_regex: bool,
+    pub glob: Option<String>,
 }
 
 pub enum SearchOptions {
@@ -63,6 +65,10 @@ impl SearchOptions {
 
 pub fn timeline(options: TimelineOptions) -> Result<()> {
     let search_options = SearchOptions::new(&options.search_string, options.case_insensitive, options.use_regex)?;
+    let glob_matcher = options.glob
+        .map(|g| Glob::new(&g))
+        .transpose()?
+        .map(|g| g.compile_matcher());
     let thread_safe_repo = ThreadSafeRepository::open(&options.path)?;
     let repo = thread_safe_repo.to_thread_local();
 
@@ -82,7 +88,7 @@ pub fn timeline(options: TimelineOptions) -> Result<()> {
     let mut commit_deltas: Vec<CommitData> = commits
         .par_iter()
         .map(|commit_id| {
-            let delta = calculate_commit_delta(&thread_safe_repo, commit_id, &search_options);
+            let delta = calculate_commit_delta(&thread_safe_repo, commit_id, &search_options, glob_matcher.as_ref());
             DeltaResult {
                 commit_id: *commit_id,
                 delta,
@@ -147,6 +153,7 @@ fn calculate_commit_delta(
     thread_safe_repo: &ThreadSafeRepository,
     commit_id: &ObjectId,
     search_options: &SearchOptions,
+    glob_matcher: Option<&GlobMatcher>,
 ) -> i64 {
     with_repo_cache(thread_safe_repo, |repo| {
         let commit = repo
@@ -168,6 +175,9 @@ fn calculate_commit_delta(
             .into_iter()
             .filter(|change| {
                 change.entry_mode().is_blob() && !change.entry_mode().is_executable()
+            })
+            .filter(|change| {
+                glob_matcher.map_or(true, |m| m.is_match(change.location().to_str_lossy().as_ref()))
             })
             .filter_map(|change| calculate_change_delta(repo, &change, search_options))
             .sum()
@@ -258,7 +268,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 2);
     }
 
@@ -270,7 +280,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 2);
     }
 
@@ -282,7 +292,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, -2);
     }
 
@@ -300,7 +310,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 1);
     }
 
@@ -311,7 +321,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 0);
     }
 
@@ -322,7 +332,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 1);
     }
 
@@ -342,7 +352,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 3);
     }
 
@@ -360,7 +370,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::literal("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 2);
     }
 
@@ -371,7 +381,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::case_insensitive("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 3);
     }
 
@@ -383,7 +393,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::case_insensitive("test");
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 2);
     }
 
@@ -394,7 +404,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::regex(r"test").unwrap();
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 2); // matches "test" and "testing"
     }
 
@@ -405,7 +415,7 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::regex(r"(?i)test").unwrap();
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 4); // matches "Test", "test", "TEST", "testing"
     }
 
@@ -416,7 +426,39 @@ mod tests {
 
         let commit_id = repo.last_commit().unwrap();
         let search_options = SearchOptions::regex(r"test\d+").unwrap();
-        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options);
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, None);
         assert_eq!(delta, 2); // matches "test123" and "test456"
+    }
+
+    #[test]
+    fn test_glob_filter_includes_matching_files() {
+        let mut repo = TestRepo::new();
+        repo.commit("Initial commit", vec![
+            ("app.rb", "test test"),
+            ("lib.rb", "test"),
+            ("readme.txt", "test test test"),
+        ]);
+
+        let commit_id = repo.last_commit().unwrap();
+        let search_options = SearchOptions::literal("test");
+        let glob_matcher = Glob::new("*.rb").unwrap().compile_matcher();
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, Some(&glob_matcher));
+        assert_eq!(delta, 3); // only counts .rb files: 2 + 1 = 3
+    }
+
+    #[test]
+    fn test_glob_filter_excludes_non_matching_files() {
+        let mut repo = TestRepo::new();
+        repo.commit("Initial commit", vec![
+            ("src/main.py", "test"),
+            ("src/lib.py", "test test"),
+            ("docs/readme.md", "test test test"),
+        ]);
+
+        let commit_id = repo.last_commit().unwrap();
+        let search_options = SearchOptions::literal("test");
+        let glob_matcher = Glob::new("**/*.py").unwrap().compile_matcher();
+        let delta = calculate_commit_delta(&repo.thread_safe_repo, &commit_id, &search_options, Some(&glob_matcher));
+        assert_eq!(delta, 3); // only counts .py files: 1 + 2 = 3
     }
 }

@@ -31,6 +31,8 @@ enum Commands {
         case_insensitive: bool,
         #[arg(long)]
         regex: bool,
+        #[arg(long, short)]
+        glob: Option<String>,
     },
 }
 
@@ -45,7 +47,7 @@ fn main() -> Result<()> {
             println!("Searching for: '{}'", search_string);
             scan::scan(&resolved_path, &search_string)?;
         }
-        Commands::Timeline { directory, search_string, output, case_insensitive, regex } => {
+        Commands::Timeline { directory, search_string, output, case_insensitive, regex, glob } => {
             let resolved_path = env::current_dir()?.join(&directory).canonicalize()?;
 
             if regex && case_insensitive {
@@ -59,6 +61,7 @@ fn main() -> Result<()> {
                 output,
                 case_insensitive,
                 use_regex: regex,
+                glob,
             })?;
         }
     }
